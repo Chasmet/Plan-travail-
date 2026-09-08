@@ -68,6 +68,31 @@ public class WorkDatabase extends SQLiteOpenHelper {
         start.add(Calendar.DAY_OF_MONTH, delta); return FORMAT.format(start.getTime());
     }
 
+    public int deleteCurrentWeekStreet(String street) {
+        Calendar start = Calendar.getInstance(Locale.FRANCE);
+        int dow = start.get(Calendar.DAY_OF_WEEK);
+        int delta = dow == Calendar.SUNDAY ? -6 : Calendar.MONDAY - dow;
+        start.add(Calendar.DAY_OF_MONTH, delta);
+        setMidnight(start);
+        Calendar end = (Calendar) start.clone();
+        end.add(Calendar.DAY_OF_MONTH, 6);
+        return getWritableDatabase().delete(
+                "work_entries",
+                "street = ? COLLATE NOCASE AND work_date BETWEEN ? AND ?",
+                new String[]{street.trim(), FORMAT.format(start.getTime()), FORMAT.format(end.getTime())}
+        );
+    }
+
+    public String findCurrentWeekStreet(String query) {
+        String q = query == null ? "" : query.trim().toLowerCase(Locale.FRANCE);
+        if (q.isEmpty()) return null;
+        for (String street : getCurrentWeekColors().keySet()) {
+            String s = street.toLowerCase(Locale.FRANCE);
+            if (s.equals(q) || s.contains(q) || q.contains(s)) return street;
+        }
+        return null;
+    }
+
     private static void setMidnight(Calendar c) { c.set(Calendar.HOUR_OF_DAY,0); c.set(Calendar.MINUTE,0); c.set(Calendar.SECOND,0); c.set(Calendar.MILLISECOND,0); }
 
     public List<String> getHistory(int limit) {
