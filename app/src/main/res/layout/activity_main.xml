@@ -83,6 +83,13 @@
                     android:layout_marginStart="6dp"
                     android:text="Exporter HD PNG + PDF" />
 
+                <com.chasmet.plantravail.DeleteTraceButton
+                    android:id="@+id/btnDeleteTrace"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:text="Supprimer tracé" />
+
                 <Button
                     android:id="@+id/btnLexique"
                     android:layout_width="wrap_content"
