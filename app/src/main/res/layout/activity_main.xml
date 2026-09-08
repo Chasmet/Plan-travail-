@@ -76,12 +76,12 @@
                     android:layout_height="wrap_content"
                     android:text="Rues" />
 
-                <Button
+                <com.chasmet.plantravail.HighResExportButton
                     android:id="@+id/btnExport"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginStart="6dp"
-                    android:text="Exporter PNG + PDF" />
+                    android:text="Exporter HD PNG + PDF" />
 
                 <Button
                     android:id="@+id/btnLexique"
