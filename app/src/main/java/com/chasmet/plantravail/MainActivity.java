@@ -4,7 +4,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
 import android.os.Bundle;
+import android.view.View;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
@@ -17,27 +19,29 @@ import org.osmdroid.config.Configuration;
 import org.osmdroid.events.MapEventsReceiver;
 import org.osmdroid.util.BoundingBox;
 import org.osmdroid.util.GeoPoint;
-import org.osmdroid.views.MapView;
 import org.osmdroid.views.overlay.MapEventsOverlay;
 import org.osmdroid.views.overlay.Polyline;
 
 import java.text.Normalizer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
 public class MainActivity extends AppCompatActivity {
-    private MapView map;
+    private OrsayMapView map;
     private TextView status;
     private TextView legend;
     private EditText streetSearch;
     private final List<Polyline> streetOverlays = new ArrayList<>();
     private List<Street> streets = new ArrayList<>();
     private StreetRepository repository;
+    private OrsayBoundaryRepository boundaryRepository;
     private WorkDatabase database;
     private BoundingBox orsayBounds;
+    private List<GeoPoint> orsayBoundary = new ArrayList<>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -57,13 +61,14 @@ public class MainActivity extends AppCompatActivity {
 
         database = new WorkDatabase(this);
         repository = new StreetRepository(this);
+        boundaryRepository = new OrsayBoundaryRepository(this);
 
         map.setMultiTouchControls(true);
         map.setHorizontalMapRepetitionEnabled(false);
         map.setVerticalMapRepetitionEnabled(false);
-        map.setMinZoomLevel(14.2);
+        map.setMinZoomLevel(14.0);
         map.setMaxZoomLevel(20.0);
-        map.getController().setZoom(14.8);
+        map.getController().setZoom(14.7);
         map.getController().setCenter(new GeoPoint(48.6993, 2.1875));
         map.getOverlays().add(new MapEventsOverlay(new MapEventsReceiver() {
             @Override
@@ -87,18 +92,41 @@ public class MainActivity extends AppCompatActivity {
             }
             return false;
         });
-        refresh.setOnClickListener(v -> loadStreets(true));
+        refresh.setOnClickListener(v -> {
+            loadBoundary(true);
+            loadStreets(true);
+        });
         sync.setOnClickListener(v -> syncMcp());
         history.setOnClickListener(v -> startActivity(new Intent(this, HistoryActivity.class)));
         settings.setOnClickListener(v -> startActivity(new Intent(this, SettingsActivity.class)));
 
         String today = DayColor.today();
-        legend.setText(DayColor.dayName(today) + " : couleur du jour • carte limitée à Orsay • touchez une rue pour la marquer");
+        legend.setText(DayColor.dayName(today) + " : couleur du jour • uniquement Orsay • touchez une rue pour la marquer");
+
+        loadBoundary(false);
         loadStreets(false);
 
         if (getSharedPreferences("settings", Context.MODE_PRIVATE).getBoolean("auto_update", true)) {
             UpdateManager.check(this, null, null, false);
         }
+    }
+
+    private void loadBoundary(boolean force) {
+        boundaryRepository.load(force, new OrsayBoundaryRepository.Callback() {
+            @Override
+            public void onLoaded(List<GeoPoint> boundary, boolean fromCache) {
+                runOnUiThread(() -> {
+                    orsayBoundary = boundary;
+                    map.setBoundary(boundary);
+                    applyOrsayBoundaryLimits();
+                });
+            }
+
+            @Override
+            public void onError(String message) {
+                runOnUiThread(() -> status.setText("Contour d'Orsay : " + message));
+            }
+        });
     }
 
     private void loadStreets(boolean force) {
@@ -108,7 +136,7 @@ public class MainActivity extends AppCompatActivity {
             public void onLoaded(List<Street> loaded, boolean fromCache) {
                 runOnUiThread(() -> {
                     streets = loaded;
-                    applyOrsayMapLimits();
+                    if (orsayBoundary.isEmpty()) applyStreetFallbackLimits();
                     renderStreets();
                     status.setText(uniqueStreetCount() + " rues d'Orsay chargées" + (fromCache ? " (cache)" : " (OpenStreetMap)"));
                 });
@@ -121,7 +149,25 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void applyOrsayMapLimits() {
+    private void applyOrsayBoundaryLimits() {
+        if (orsayBoundary.size() < 3) return;
+        double north = -90.0;
+        double south = 90.0;
+        double east = -180.0;
+        double west = 180.0;
+        for (GeoPoint p : orsayBoundary) {
+            north = Math.max(north, p.getLatitude());
+            south = Math.min(south, p.getLatitude());
+            east = Math.max(east, p.getLongitude());
+            west = Math.min(west, p.getLongitude());
+        }
+        if (north <= south || east <= west) return;
+        orsayBounds = new BoundingBox(north, east, south, west);
+        map.setScrollableAreaLimitDouble(orsayBounds);
+        map.post(() -> map.zoomToBoundingBox(orsayBounds, false, 20));
+    }
+
+    private void applyStreetFallbackLimits() {
         if (streets.isEmpty()) return;
         double north = -90.0;
         double south = 90.0;
@@ -136,22 +182,9 @@ public class MainActivity extends AppCompatActivity {
             }
         }
         if (north <= south || east <= west) return;
-
-        // Petite marge uniquement pour ne pas couper une rue en bordure de commune.
-        double latMargin = Math.max(0.0008, (north - south) * 0.025);
-        double lonMargin = Math.max(0.0008, (east - west) * 0.025);
-        orsayBounds = new BoundingBox(
-                north + latMargin,
-                east + lonMargin,
-                south - latMargin,
-                west - lonMargin
-        );
+        orsayBounds = new BoundingBox(north, east, south, west);
         map.setScrollableAreaLimitDouble(orsayBounds);
-        map.getController().setCenter(new GeoPoint(
-                (north + south) / 2.0,
-                (east + west) / 2.0
-        ));
-        map.getController().setZoom(14.8);
+        map.post(() -> map.zoomToBoundingBox(orsayBounds, false, 20));
     }
 
     private int uniqueStreetCount() {
@@ -178,6 +211,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void searchStreet() {
+        hideKeyboard();
         if (streets.isEmpty()) {
             Toast.makeText(this, "Les rues d'Orsay sont encore en chargement", Toast.LENGTH_SHORT).show();
             return;
@@ -188,10 +222,23 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        String normalizedQuery = normalize(query);
+        List<String> queryTokens = usefulTokens(normalize(query));
+        if (queryTokens.isEmpty()) {
+            Toast.makeText(this, "Ajoutez le nom de la rue", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
         LinkedHashMap<String, List<Street>> grouped = new LinkedHashMap<>();
         for (Street street : streets) {
-            if (normalize(street.getName()).contains(normalizedQuery)) {
+            String normalizedStreet = normalize(street.getName());
+            boolean allTokensPresent = true;
+            for (String token : queryTokens) {
+                if (!normalizedStreet.contains(token)) {
+                    allTokensPresent = false;
+                    break;
+                }
+            }
+            if (allTokensPresent) {
                 grouped.computeIfAbsent(street.getName(), key -> new ArrayList<>()).add(street);
             }
         }
@@ -209,6 +256,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         List<String> names = new ArrayList<>(grouped.keySet());
+        names.sort((a, b) -> Integer.compare(searchScore(b, queryTokens), searchScore(a, queryTokens)));
         if (names.size() > 25) names = new ArrayList<>(names.subList(0, 25));
         String[] choices = names.toArray(new String[0]);
         List<String> finalNames = names;
@@ -220,6 +268,29 @@ public class MainActivity extends AppCompatActivity {
                 })
                 .setNegativeButton("Annuler", null)
                 .show();
+    }
+
+    private int searchScore(String streetName, List<String> tokens) {
+        String n = normalize(streetName);
+        int score = 0;
+        for (String token : tokens) {
+            if (n.equals(token)) score += 100;
+            else if (n.startsWith(token)) score += 30;
+            else if (n.contains(" " + token)) score += 20;
+            else if (n.contains(token)) score += 10;
+        }
+        return score;
+    }
+
+    private List<String> usefulTokens(String normalized) {
+        List<String> ignored = Arrays.asList(
+                "orsay", "rue", "avenue", "av", "boulevard", "bd", "route", "chemin", "allee", "impasse", "place", "square", "de", "du", "des", "la", "le", "les", "d"
+        );
+        List<String> result = new ArrayList<>();
+        for (String token : normalized.split(" ")) {
+            if (token.length() >= 2 && !ignored.contains(token)) result.add(token);
+        }
+        return result;
     }
 
     private void focusStreet(String name, List<Street> matches) {
@@ -248,7 +319,16 @@ public class MainActivity extends AppCompatActivity {
         String n = Normalizer.normalize(value, Normalizer.Form.NFD)
                 .replaceAll("\\p{M}+", "")
                 .toLowerCase(Locale.FRANCE);
-        return n.replace("'", " ").replace("-", " ").replaceAll("\\s+", " ").trim();
+        return n.replace("'", " ").replace("-", " ").replaceAll("[^a-z0-9 ]", " ").replaceAll("\\s+", " ").trim();
+    }
+
+    private void hideKeyboard() {
+        View current = getCurrentFocus();
+        if (current != null) {
+            InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm != null) imm.hideSoftInputFromWindow(current.getWindowToken(), 0);
+            current.clearFocus();
+        }
     }
 
     private void selectNearestStreet(GeoPoint point) {
