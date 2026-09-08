@@ -16,6 +16,7 @@
         android:theme="@style/Theme.PlanTravail"
         android:usesCleartextTraffic="false">
 
+        <activity android:name=".LexiqueActivity" android:exported="false" />
         <activity android:name=".HistoryActivity" android:exported="false" />
         <activity android:name=".SettingsActivity" android:exported="false" />
         <activity
