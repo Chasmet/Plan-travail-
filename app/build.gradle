@@ -4,6 +4,10 @@ plugins {
 
 def autoVersionCode = (project.findProperty('AUTO_VERSION_CODE') ?: '1') as Integer
 def autoVersionName = project.findProperty('AUTO_VERSION_NAME') ?: '1.0.0'
+def releaseStoreFile = project.findProperty('RELEASE_STORE_FILE')
+def releaseStorePassword = project.findProperty('RELEASE_STORE_PASSWORD')
+def releaseKeyAlias = project.findProperty('RELEASE_KEY_ALIAS')
+def releaseKeyPassword = project.findProperty('RELEASE_KEY_PASSWORD')
 
 configurations.configureEach {
     resolutionStrategy.force 'org.jetbrains.kotlin:kotlin-stdlib:1.8.22'
@@ -27,8 +31,18 @@ android {
         buildConfig true
     }
 
+    signingConfigs {
+        release {
+            if (releaseStoreFile != null) storeFile file(releaseStoreFile)
+            storePassword releaseStorePassword
+            keyAlias releaseKeyAlias
+            keyPassword releaseKeyPassword
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
