@@ -12,7 +12,10 @@ import android.os.Build;
 import android.os.Environment;
 import android.provider.MediaStore;
 
+import org.osmdroid.util.BoundingBox;
 import org.osmdroid.util.GeoPoint;
+import org.osmdroid.views.overlay.Overlay;
+import org.osmdroid.views.overlay.Polyline;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -61,6 +64,7 @@ public final class HighResWeeklyExporter {
             east = Math.max(east, p.getLongitude());
             west = Math.min(west, p.getLongitude());
         }
+        BoundingBox originalBounds = new BoundingBox(north, east, south, west);
 
         int zoom = TARGET_ZOOM;
         Grid grid = makeGrid(north, east, south, west, map.getWidth(), map.getHeight(), zoom);
@@ -72,11 +76,18 @@ public final class HighResWeeklyExporter {
         WorkDatabase db = new WorkDatabase(activity);
         double oldZoom = map.getZoomLevelDouble();
         GeoPoint oldCenter = (GeoPoint) map.getMapCenter();
+        List<OverlayStyle> overlayStyles = prepareReadableRoutes(map);
+
+        // Pendant l'assemblage HD, on libère temporairement la limite de déplacement.
+        // Sinon osmdroid recale certaines cellules sur la même position et duplique des morceaux de carte.
+        map.setScrollableAreaLimitDouble(new BoundingBox(85.0, 179.0, -85.0, -179.0));
 
         Bitmap result;
         try {
             result = Bitmap.createBitmap(grid.outputWidth, grid.outputHeight + HEADER, Bitmap.Config.ARGB_8888);
         } catch (OutOfMemoryError e) {
+            restoreOverlayStyles(overlayStyles);
+            map.setScrollableAreaLimitDouble(originalBounds);
             callback.onError("Mémoire insuffisante pour l'export HD");
             return;
         }
@@ -85,9 +96,37 @@ public final class HighResWeeklyExporter {
         canvas.drawColor(Color.WHITE);
         drawHeader(canvas, db, grid.outputWidth, zoom);
 
-        ExportState state = new ExportState(activity, map, callback, result, canvas, grid, boundary, db, oldZoom, oldCenter, zoom);
+        ExportState state = new ExportState(activity, map, callback, result, canvas, grid, boundary, db,
+                oldZoom, oldCenter, zoom, originalBounds, overlayStyles);
         callback.onProgress("HD 0 %");
         captureNext(state);
+    }
+
+    private static List<OverlayStyle> prepareReadableRoutes(OrsayMapView map) {
+        List<OverlayStyle> saved = new ArrayList<>();
+        for (Overlay overlay : map.getOverlays()) {
+            if (!(overlay instanceof Polyline)) continue;
+            Polyline line = (Polyline) overlay;
+            int color = line.getOutlinePaint().getColor();
+            float width = line.getOutlinePaint().getStrokeWidth();
+            saved.add(new OverlayStyle(line, color, width));
+
+            // Les tracés de travail restent visibles, mais deviennent translucides et plus fins.
+            // Ainsi le nom OpenStreetMap (ex. Rue de Versailles) reste lisible sous le tracé.
+            if (Color.alpha(color) >= 180 || width >= 8f) {
+                line.getOutlinePaint().setColor(Color.argb(118, Color.red(color), Color.green(color), Color.blue(color)));
+                line.getOutlinePaint().setStrokeWidth(Math.min(width, 6f));
+            }
+        }
+        map.invalidate();
+        return saved;
+    }
+
+    private static void restoreOverlayStyles(List<OverlayStyle> styles) {
+        for (OverlayStyle style : styles) {
+            style.line.getOutlinePaint().setColor(style.color);
+            style.line.getOutlinePaint().setStrokeWidth(style.width);
+        }
     }
 
     private static void captureNext(ExportState s) {
@@ -117,12 +156,11 @@ public final class HighResWeeklyExporter {
                 s.result.recycle();
                 s.callback.onError(t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage());
             }
-        }, 520);
+        }, 560);
     }
 
     private static void finish(ExportState s) {
         try {
-            // Le contour bleu est redessiné à la résolution finale pour rester net au zoom.
             Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
             border.setColor(Color.rgb(20, 110, 230));
             border.setStyle(Paint.Style.STROKE);
@@ -154,8 +192,11 @@ public final class HighResWeeklyExporter {
     }
 
     private static void restore(ExportState s) {
+        restoreOverlayStyles(s.overlayStyles);
+        s.map.setScrollableAreaLimitDouble(s.originalBounds);
         s.map.getController().setZoom(s.oldZoom);
         s.map.getController().setCenter(s.oldCenter);
+        s.map.invalidate();
     }
 
     private static void drawHeader(Canvas canvas, WorkDatabase db, int width, int zoom) {
@@ -182,7 +223,6 @@ public final class HighResWeeklyExporter {
         int outW = cols * viewW;
         int outH = rows * viewH;
 
-        // Centre la commune dans le canevas final pour éviter une bordure déséquilibrée.
         double usedW = outW;
         double usedH = outH;
         double leftWorld = (left + right - usedW) / 2.0;
@@ -303,6 +343,17 @@ public final class HighResWeeklyExporter {
         }
     }
 
+    private static final class OverlayStyle {
+        final Polyline line;
+        final int color;
+        final float width;
+        OverlayStyle(Polyline line, int color, float width) {
+            this.line = line;
+            this.color = color;
+            this.width = width;
+        }
+    }
+
     private static final class ExportState {
         final Activity activity;
         final OrsayMapView map;
@@ -315,10 +366,13 @@ public final class HighResWeeklyExporter {
         final double oldZoom;
         final GeoPoint oldCenter;
         final int zoom;
+        final BoundingBox originalBounds;
+        final List<OverlayStyle> overlayStyles;
         int index;
 
         ExportState(Activity activity, OrsayMapView map, Callback callback, Bitmap result, Canvas canvas,
-                    Grid grid, List<GeoPoint> boundary, WorkDatabase db, double oldZoom, GeoPoint oldCenter, int zoom) {
+                    Grid grid, List<GeoPoint> boundary, WorkDatabase db, double oldZoom, GeoPoint oldCenter,
+                    int zoom, BoundingBox originalBounds, List<OverlayStyle> overlayStyles) {
             this.activity = activity;
             this.map = map;
             this.callback = callback;
@@ -330,6 +384,8 @@ public final class HighResWeeklyExporter {
             this.oldZoom = oldZoom;
             this.oldCenter = oldCenter;
             this.zoom = zoom;
+            this.originalBounds = originalBounds;
+            this.overlayStyles = overlayStyles;
         }
     }
 }
