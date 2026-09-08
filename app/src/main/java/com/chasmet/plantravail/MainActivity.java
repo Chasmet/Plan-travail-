@@ -68,6 +68,7 @@ public class MainActivity extends AppCompatActivity {
         Button search = findViewById(R.id.btnSearch);
         Button refresh = findViewById(R.id.btnRefresh);
         Button export = findViewById(R.id.btnExport);
+        Button lexique = findViewById(R.id.btnLexique);
         Button sync = findViewById(R.id.btnSync);
         Button history = findViewById(R.id.btnHistory);
         Button settings = findViewById(R.id.btnSettings);
@@ -110,6 +111,7 @@ public class MainActivity extends AppCompatActivity {
             loadStreets(true);
         });
         export.setOnClickListener(v -> exportWeeklyMap());
+        lexique.setOnClickListener(v -> startActivity(new Intent(this, LexiqueActivity.class)));
         sync.setOnClickListener(v -> syncMcp());
         history.setOnClickListener(v -> startActivity(new Intent(this, HistoryActivity.class)));
         settings.setOnClickListener(v -> startActivity(new Intent(this, SettingsActivity.class)));
@@ -173,15 +175,10 @@ public class MainActivity extends AppCompatActivity {
 
     private void applyOrsayBoundaryLimits() {
         if (orsayBoundary.size() < 3) return;
-        double north = -90.0;
-        double south = 90.0;
-        double east = -180.0;
-        double west = 180.0;
+        double north = -90.0, south = 90.0, east = -180.0, west = 180.0;
         for (GeoPoint p : orsayBoundary) {
-            north = Math.max(north, p.getLatitude());
-            south = Math.min(south, p.getLatitude());
-            east = Math.max(east, p.getLongitude());
-            west = Math.min(west, p.getLongitude());
+            north = Math.max(north, p.getLatitude()); south = Math.min(south, p.getLatitude());
+            east = Math.max(east, p.getLongitude()); west = Math.min(west, p.getLongitude());
         }
         if (north <= south || east <= west) return;
         orsayBounds = new BoundingBox(north, east, south, west);
@@ -191,16 +188,11 @@ public class MainActivity extends AppCompatActivity {
 
     private void applyStreetFallbackLimits() {
         if (streets.isEmpty()) return;
-        double north = -90.0;
-        double south = 90.0;
-        double east = -180.0;
-        double west = 180.0;
+        double north = -90.0, south = 90.0, east = -180.0, west = 180.0;
         for (Street street : streets) {
             for (GeoPoint p : street.getPoints()) {
-                north = Math.max(north, p.getLatitude());
-                south = Math.min(south, p.getLatitude());
-                east = Math.max(east, p.getLongitude());
-                west = Math.min(west, p.getLongitude());
+                north = Math.max(north, p.getLatitude()); south = Math.min(south, p.getLatitude());
+                east = Math.max(east, p.getLongitude()); west = Math.min(west, p.getLongitude());
             }
         }
         if (north <= south || east <= west) return;
@@ -292,7 +284,6 @@ public class MainActivity extends AppCompatActivity {
         String street = normalize(streetName);
         String simplifiedStreet = removeStreetWords(street);
         String simplifiedQuery = removeStreetWords(normalizedQuery);
-
         if (street.equals(normalizedQuery) || simplifiedStreet.equals(simplifiedQuery)) return 120;
         if (street.contains(normalizedQuery) || normalizedQuery.contains(street)) return 105;
         if (!simplifiedQuery.isEmpty() && (simplifiedStreet.contains(simplifiedQuery) || simplifiedQuery.contains(simplifiedStreet))) return 100;
@@ -313,10 +304,7 @@ public class MainActivity extends AppCompatActivity {
                     if (distance <= maxAllowed) best = Math.max(best, 14);
                 }
             }
-            if (best > 0) {
-                total += best;
-                matched++;
-            }
+            if (best > 0) { total += best; matched++; }
         }
         if (matched == 0) return 0;
         if (queryTokens.size() > 1 && matched < Math.max(1, queryTokens.size() - 1)) return 0;
@@ -352,25 +340,18 @@ public class MainActivity extends AppCompatActivity {
                 int cost = a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1;
                 curr[j] = Math.min(Math.min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
             }
-            int[] temp = prev;
-            prev = curr;
-            curr = temp;
+            int[] temp = prev; prev = curr; curr = temp;
         }
         return prev[b.length()];
     }
 
     private void focusStreet(String name, List<Street> matches) {
         if (matches == null || matches.isEmpty()) return;
-        double north = -90.0;
-        double south = 90.0;
-        double east = -180.0;
-        double west = 180.0;
+        double north = -90.0, south = 90.0, east = -180.0, west = 180.0;
         for (Street street : matches) {
             for (GeoPoint p : street.getPoints()) {
-                north = Math.max(north, p.getLatitude());
-                south = Math.min(south, p.getLatitude());
-                east = Math.max(east, p.getLongitude());
-                west = Math.min(west, p.getLongitude());
+                north = Math.max(north, p.getLatitude()); south = Math.min(south, p.getLatitude());
+                east = Math.max(east, p.getLongitude()); west = Math.min(west, p.getLongitude());
             }
         }
         double latPad = Math.max(0.00035, (north - south) * 0.25);
@@ -384,9 +365,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private String normalize(String value) {
-        String n = Normalizer.normalize(value, Normalizer.Form.NFD)
-                .replaceAll("\\p{M}+", "")
-                .toLowerCase(Locale.FRANCE);
+        String n = Normalizer.normalize(value, Normalizer.Form.NFD).replaceAll("\\p{M}+", "").toLowerCase(Locale.FRANCE);
         return n.replace("'", " ").replace("-", " ").replaceAll("[^a-z0-9 ]", " ").replaceAll("\\s+", " ").trim();
     }
 
@@ -405,10 +384,7 @@ public class MainActivity extends AppCompatActivity {
         for (Street street : streets) {
             for (GeoPoint p : street.getPoints()) {
                 double d = point.distanceToAsDouble(p);
-                if (d < best) {
-                    best = d;
-                    nearest = street;
-                }
+                if (d < best) { best = d; nearest = street; }
             }
         }
         if (nearest == null || best > 70.0) {
@@ -435,7 +411,7 @@ public class MainActivity extends AppCompatActivity {
             Toast.makeText(this, "La carte d'Orsay n'est pas encore prête", Toast.LENGTH_SHORT).show();
             return;
         }
-        status.setText("Préparation de la carte de la semaine…");
+        status.setText("Préparation PNG + PDF de la semaine…");
         map.zoomToBoundingBox(orsayBounds, false, 20);
         map.postDelayed(this::captureAndSaveMap, 900);
     }
@@ -469,11 +445,12 @@ public class MainActivity extends AppCompatActivity {
             map.draw(canvas);
             canvas.restore();
 
-            String fileName = "Plan_Travail_Orsay_Semaine_" + database.getCurrentWeekStart() + ".png";
-            saveBitmap(bitmap, fileName);
+            String pngName = "Plan_Travail_Orsay_Semaine_" + database.getCurrentWeekStart() + ".png";
+            saveBitmap(bitmap, pngName);
+            String pdfName = WeeklyPdfExporter.save(this, bitmap, database.getCurrentWeekStart(), database.getCurrentWeekCount());
             bitmap.recycle();
-            status.setText("Carte téléchargée : " + fileName);
-            Toast.makeText(this, "Carte enregistrée dans Images", Toast.LENGTH_LONG).show();
+            status.setText("Exports créés : " + pngName + " + " + pdfName);
+            Toast.makeText(this, "PNG enregistré dans Images et PDF dans Téléchargements", Toast.LENGTH_LONG).show();
         } catch (Exception e) {
             status.setText("Export impossible : " + e.getMessage());
             Toast.makeText(this, "Impossible d'enregistrer la carte", Toast.LENGTH_LONG).show();
@@ -488,9 +465,7 @@ public class MainActivity extends AppCompatActivity {
         canvas.drawText(label, x + 30, y, paint);
     }
 
-    private String mondayDate() {
-        return database.getCurrentWeekStart();
-    }
+    private String mondayDate() { return database.getCurrentWeekStart(); }
 
     private String offsetDate(int days) {
         try {
@@ -499,9 +474,7 @@ public class MainActivity extends AppCompatActivity {
             c.setTime(format.parse(database.getCurrentWeekStart()));
             c.add(java.util.Calendar.DAY_OF_MONTH, days);
             return format.format(c.getTime());
-        } catch (Exception e) {
-            return DayColor.today();
-        }
+        } catch (Exception e) { return DayColor.today(); }
     }
 
     private void saveBitmap(Bitmap bitmap, String fileName) throws Exception {
