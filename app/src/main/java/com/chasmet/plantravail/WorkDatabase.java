@@ -6,14 +6,18 @@ import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
 
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 public class WorkDatabase extends SQLiteOpenHelper {
     private static final String DB_NAME = "plan_travail.db";
     private static final int DB_VERSION = 1;
+    private static final SimpleDateFormat FORMAT = new SimpleDateFormat("yyyy-MM-dd", Locale.FRANCE);
 
     public WorkDatabase(Context context) {
         super(context, DB_NAME, null, DB_VERSION);
@@ -44,6 +48,58 @@ public class WorkDatabase extends SQLiteOpenHelper {
             while (c.moveToNext()) result.put(c.getString(0), c.getInt(1));
         }
         return result;
+    }
+
+    public Map<String, Integer> getCurrentWeekColors() {
+        Calendar start = Calendar.getInstance(Locale.FRANCE);
+        int dow = start.get(Calendar.DAY_OF_WEEK);
+        int delta = dow == Calendar.SUNDAY ? -6 : Calendar.MONDAY - dow;
+        start.add(Calendar.DAY_OF_MONTH, delta);
+        setMidnight(start);
+
+        Calendar end = (Calendar) start.clone();
+        end.add(Calendar.DAY_OF_MONTH, 6);
+
+        String startDate = FORMAT.format(start.getTime());
+        String endDate = FORMAT.format(end.getTime());
+        Map<String, Integer> result = new HashMap<>();
+        String sql = "SELECT w.street, w.color FROM work_entries w " +
+                "JOIN (SELECT street, MAX(work_date) d FROM work_entries WHERE work_date BETWEEN ? AND ? GROUP BY street) x " +
+                "ON x.street=w.street AND x.d=w.work_date";
+        try (Cursor c = getReadableDatabase().rawQuery(sql, new String[]{startDate, endDate})) {
+            while (c.moveToNext()) result.put(c.getString(0), c.getInt(1));
+        }
+        return result;
+    }
+
+    public int getCurrentWeekCount() {
+        Calendar start = Calendar.getInstance(Locale.FRANCE);
+        int dow = start.get(Calendar.DAY_OF_WEEK);
+        int delta = dow == Calendar.SUNDAY ? -6 : Calendar.MONDAY - dow;
+        start.add(Calendar.DAY_OF_MONTH, delta);
+        setMidnight(start);
+        Calendar end = (Calendar) start.clone();
+        end.add(Calendar.DAY_OF_MONTH, 6);
+        try (Cursor c = getReadableDatabase().rawQuery(
+                "SELECT COUNT(*) FROM work_entries WHERE work_date BETWEEN ? AND ?",
+                new String[]{FORMAT.format(start.getTime()), FORMAT.format(end.getTime())})) {
+            return c.moveToFirst() ? c.getInt(0) : 0;
+        }
+    }
+
+    public String getCurrentWeekStart() {
+        Calendar start = Calendar.getInstance(Locale.FRANCE);
+        int dow = start.get(Calendar.DAY_OF_WEEK);
+        int delta = dow == Calendar.SUNDAY ? -6 : Calendar.MONDAY - dow;
+        start.add(Calendar.DAY_OF_MONTH, delta);
+        return FORMAT.format(start.getTime());
+    }
+
+    private static void setMidnight(Calendar c) {
+        c.set(Calendar.HOUR_OF_DAY, 0);
+        c.set(Calendar.MINUTE, 0);
+        c.set(Calendar.SECOND, 0);
+        c.set(Calendar.MILLISECOND, 0);
     }
 
     public List<String> getHistory(int limit) {
