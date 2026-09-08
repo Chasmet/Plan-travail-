@@ -21,14 +21,32 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Vérifier la clé permanente
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "$ANDROID_KEYSTORE_BASE64" || (echo "ANDROID_KEYSTORE_BASE64 absent" && exit 1)
+          test -n "$ANDROID_KEYSTORE_PASSWORD" || (echo "ANDROID_KEYSTORE_PASSWORD absent" && exit 1)
+          test -n "$ANDROID_KEY_ALIAS" || (echo "ANDROID_KEY_ALIAS absent" && exit 1)
+          test -n "$ANDROID_KEY_PASSWORD" || (echo "ANDROID_KEY_PASSWORD absent" && exit 1)
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/plantravail-release.jks"
+
       - name: Préparer Gradle
         run: chmod +x gradlew
 
-      - name: Compiler APK debug installable
-        run: ./gradlew assembleDebug -PAUTO_VERSION_CODE=${{ github.run_number }} -PAUTO_VERSION_NAME=1.0.${{ github.run_number }}
+      - name: Compiler APK release avec signature permanente
+        env:
+          ORG_GRADLE_PROJECT_RELEASE_STORE_FILE: ${{ runner.temp }}/plantravail-release.jks
+          ORG_GRADLE_PROJECT_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ORG_GRADLE_PROJECT_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ORG_GRADLE_PROJECT_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew assembleRelease -PAUTO_VERSION_CODE=${{ github.run_number }} -PAUTO_VERSION_NAME=1.0.${{ github.run_number }}
 
       - name: Renommer APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk PlanTravail-Orsay-v1.0.${{ github.run_number }}.apk
+        run: cp app/build/outputs/apk/release/app-release.apk PlanTravail-Orsay-v1.0.${{ github.run_number }}.apk
 
       - name: Publier Artifact GitHub Actions
         uses: actions/upload-artifact@v4
@@ -43,7 +61,7 @@ jobs:
           tag_name: v1.0.${{ github.run_number }}
           name: Plan Travail Orsay v1.0.${{ github.run_number }}
           body: |
-            Mise à jour automatique de Plan Travail Orsay.
-            Les données locales existantes sont conservées lors de l'installation de l'APK par-dessus la version précédente.
+            Mise à jour automatique signée de Plan Travail Orsay.
+            La même clé Android permanente est réutilisée pour toutes les versions afin de conserver les données locales.
           files: PlanTravail-Orsay-v1.0.${{ github.run_number }}.apk
           make_latest: true
