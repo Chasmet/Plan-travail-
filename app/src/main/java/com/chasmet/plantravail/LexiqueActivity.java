@@ -18,6 +18,7 @@ public class LexiqueActivity extends AppCompatActivity {
     private WorkDatabase database;
     private ListView listView;
     private final List<String[]> rows = new ArrayList<>();
+    private int selectedPosition = -1;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -26,18 +27,41 @@ public class LexiqueActivity extends AppCompatActivity {
         database = new WorkDatabase(this);
         listView = findViewById(R.id.listLexique);
         Button add = findViewById(R.id.btnAddLexique);
+        Button delete = findViewById(R.id.btnDeleteLexique);
+
         add.setOnClickListener(v -> showAddDialog());
+        delete.setOnClickListener(v -> deleteSelected());
+
+        listView.setOnItemClickListener((parent, view, position, id) -> {
+            selectedPosition = position;
+            listView.setItemChecked(position, true);
+            Toast.makeText(this, "Sélectionné : " + rows.get(position)[1], Toast.LENGTH_SHORT).show();
+        });
+
         listView.setOnItemLongClickListener((parent, view, position, id) -> {
-            String[] row = rows.get(position);
-            new AlertDialog.Builder(this)
-                    .setTitle(row[1])
-                    .setMessage("Supprimer cette spécificité ?")
-                    .setNegativeButton("Annuler", null)
-                    .setPositiveButton("Supprimer", (d, w) -> { database.deleteLexicon(Long.parseLong(row[0])); refresh(); })
-                    .show();
+            selectedPosition = position;
+            deleteSelected();
             return true;
         });
         refresh();
+    }
+
+    private void deleteSelected() {
+        if (selectedPosition < 0 || selectedPosition >= rows.size()) {
+            Toast.makeText(this, "Sélectionne d'abord une entrée", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String[] row = rows.get(selectedPosition);
+        new AlertDialog.Builder(this)
+                .setTitle(row[1])
+                .setMessage("Supprimer cette spécificité ?")
+                .setNegativeButton("Annuler", null)
+                .setPositiveButton("Supprimer", (d, w) -> {
+                    database.deleteLexicon(Long.parseLong(row[0]));
+                    selectedPosition = -1;
+                    refresh();
+                })
+                .show();
     }
 
     private void showAddDialog() {
@@ -62,7 +86,10 @@ public class LexiqueActivity extends AppCompatActivity {
         dialog.setOnShowListener(x -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
             String t = title.getText().toString().trim();
             String d = details.getText().toString().trim();
-            if (t.isEmpty() || d.isEmpty()) { Toast.makeText(this, "Titre et détails obligatoires", Toast.LENGTH_SHORT).show(); return; }
+            if (t.isEmpty() || d.isEmpty()) {
+                Toast.makeText(this, "Titre et détails obligatoires", Toast.LENGTH_SHORT).show();
+                return;
+            }
             database.addLexicon(t, d);
             dialog.dismiss();
             refresh();
@@ -71,9 +98,11 @@ public class LexiqueActivity extends AppCompatActivity {
     }
 
     private void refresh() {
-        rows.clear(); rows.addAll(database.getLexicon());
+        rows.clear();
+        rows.addAll(database.getLexicon());
         List<String> display = new ArrayList<>();
         for (String[] r : rows) display.add(r[1] + "\n" + r[2] + "\nAjouté le " + r[3]);
-        listView.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, display));
+        listView.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_list_item_single_choice, display));
+        listView.clearChoices();
     }
 }
