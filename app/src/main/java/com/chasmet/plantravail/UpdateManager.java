@@ -31,10 +31,14 @@ import java.util.concurrent.Executors;
 public final class UpdateManager {
     private static final String RELEASES_URL = "https://api.github.com/repos/Chasmet/Plan-travail-/releases/latest";
     private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor();
+    private static final String PREF_DOWNLOAD_ID = "pending_download_id";
+    private static final String PREF_TARGET_VERSION = "pending_target_version";
+    private static final String PREF_INSTALL_LAUNCHED = "pending_install_launched";
 
     private UpdateManager() {}
 
     public static void check(Activity activity, ProgressBar progress, TextView status, boolean showUpToDate) {
+        cleanupCompletedUpdate(activity);
         setStatus(activity, progress, status, 0, "Recherche d'une mise à jour…", false);
         EXECUTOR.execute(() -> {
             try {
@@ -73,6 +77,7 @@ public final class UpdateManager {
                     return;
                 }
                 if (compareVersions(tag, BuildConfig.VERSION_NAME) <= 0) {
+                    clearPending(activity);
                     if (showUpToDate) setStatus(activity, progress, status, 0, "L'application est à jour.", false);
                     return;
                 }
@@ -91,6 +96,7 @@ public final class UpdateManager {
     }
 
     private static void download(Activity activity, String url, String tag, ProgressBar progress, TextView status) {
+        clearPending(activity);
         DownloadManager manager = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
         DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
         request.setTitle("Plan Travail " + tag);
@@ -99,7 +105,11 @@ public final class UpdateManager {
         request.setDestinationInExternalFilesDir(activity, Environment.DIRECTORY_DOWNLOADS, "PlanTravail-" + tag + ".apk");
         request.setMimeType("application/vnd.android.package-archive");
         long id = manager.enqueue(request);
-        activity.getSharedPreferences("settings", Context.MODE_PRIVATE).edit().putLong("pending_download_id", id).apply();
+        activity.getSharedPreferences("settings", Context.MODE_PRIVATE).edit()
+                .putLong(PREF_DOWNLOAD_ID, id)
+                .putString(PREF_TARGET_VERSION, tag)
+                .putBoolean(PREF_INSTALL_LAUNCHED, false)
+                .apply();
         setStatus(activity, progress, status, 0, "Téléchargement 0 %", true);
         pollDownload(activity, id, progress, status);
     }
@@ -122,6 +132,7 @@ public final class UpdateManager {
                             install(activity, id);
                         } else if (state == DownloadManager.STATUS_FAILED) {
                             done = true;
+                            clearPending(activity);
                             setStatus(activity, progress, status, 0, "Échec du téléchargement.", false);
                         }
                     }
@@ -138,31 +149,73 @@ public final class UpdateManager {
 
     public static void resumePendingInstall(Activity activity) {
         SharedPreferences prefs = activity.getSharedPreferences("settings", Context.MODE_PRIVATE);
-        long id = prefs.getLong("pending_download_id", -1L);
+        String target = prefs.getString(PREF_TARGET_VERSION, "");
+
+        if (!target.isEmpty() && compareVersions(BuildConfig.VERSION_NAME, target) >= 0) {
+            clearPending(activity);
+            return;
+        }
+
+        long id = prefs.getLong(PREF_DOWNLOAD_ID, -1L);
         if (id < 0) return;
+
+        // Si l'installateur Android a déjà été lancé, ne jamais le relancer en boucle.
+        if (prefs.getBoolean(PREF_INSTALL_LAUNCHED, false)) return;
+
         DownloadManager manager = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
         try (Cursor cursor = manager.query(new DownloadManager.Query().setFilterById(id))) {
             if (cursor != null && cursor.moveToFirst()) {
                 int state = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
                 if (state == DownloadManager.STATUS_SUCCESSFUL) install(activity, id);
+                else if (state == DownloadManager.STATUS_FAILED) clearPending(activity);
+            } else {
+                clearPending(activity);
             }
         }
     }
 
     private static void install(Activity activity, long id) {
+        SharedPreferences prefs = activity.getSharedPreferences("settings", Context.MODE_PRIVATE);
+        String target = prefs.getString(PREF_TARGET_VERSION, "");
+        if (!target.isEmpty() && compareVersions(BuildConfig.VERSION_NAME, target) >= 0) {
+            clearPending(activity);
+            return;
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !activity.getPackageManager().canRequestPackageInstalls()) {
             Intent permission = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + activity.getPackageName()));
             activity.startActivity(permission);
             Toast.makeText(activity, "Autorisez Plan Travail à installer sa mise à jour, puis revenez dans l'application.", Toast.LENGTH_LONG).show();
             return;
         }
+
         DownloadManager manager = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
         Uri uri = manager.getUriForDownloadedFile(id);
-        if (uri == null) return;
+        if (uri == null) {
+            clearPending(activity);
+            return;
+        }
+
+        // Marqué avant d'ouvrir l'installateur : un retour dans l'application ne déclenche pas une seconde installation.
+        prefs.edit().putBoolean(PREF_INSTALL_LAUNCHED, true).apply();
         Intent install = new Intent(Intent.ACTION_VIEW);
         install.setDataAndType(uri, "application/vnd.android.package-archive");
         install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
         activity.startActivity(install);
+    }
+
+    private static void cleanupCompletedUpdate(Activity activity) {
+        SharedPreferences prefs = activity.getSharedPreferences("settings", Context.MODE_PRIVATE);
+        String target = prefs.getString(PREF_TARGET_VERSION, "");
+        if (!target.isEmpty() && compareVersions(BuildConfig.VERSION_NAME, target) >= 0) clearPending(activity);
+    }
+
+    private static void clearPending(Activity activity) {
+        activity.getSharedPreferences("settings", Context.MODE_PRIVATE).edit()
+                .remove(PREF_DOWNLOAD_ID)
+                .remove(PREF_TARGET_VERSION)
+                .remove(PREF_INSTALL_LAUNCHED)
+                .apply();
     }
 
     private static int compareVersions(String a, String b) {
