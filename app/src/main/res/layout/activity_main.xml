@@ -81,7 +81,14 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginStart="6dp"
-                    android:text="Télécharger carte" />
+                    android:text="Exporter PNG + PDF" />
+
+                <Button
+                    android:id="@+id/btnLexique"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:text="Lexique" />
 
                 <Button
                     android:id="@+id/btnSync"
