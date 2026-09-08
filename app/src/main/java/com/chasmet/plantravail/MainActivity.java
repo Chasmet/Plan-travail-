@@ -1,5 +1,6 @@
 package com.chasmet.plantravail;
 
+import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
 import android.os.Bundle;
@@ -72,6 +73,10 @@ public class MainActivity extends AppCompatActivity {
         String today = DayColor.today();
         legend.setText(DayColor.dayName(today) + " : couleur du jour • Touchez une rue pour la marquer");
         loadStreets(false);
+
+        if (getSharedPreferences("settings", Context.MODE_PRIVATE).getBoolean("auto_update", true)) {
+            UpdateManager.check(this, null, null, false);
+        }
     }
 
     private void loadStreets(boolean force) {
@@ -167,6 +172,7 @@ public class MainActivity extends AppCompatActivity {
         super.onResume();
         if (map != null) map.onResume();
         if (database != null && !streets.isEmpty()) renderStreets();
+        UpdateManager.resumePendingInstall(this);
     }
 
     @Override
