@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Plan Travail Orsay</string>
+    <string name="settings">Réglages</string>
+    <string name="history">Historique</string>
+</resources>

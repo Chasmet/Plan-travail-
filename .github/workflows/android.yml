@@ -1,0 +1,49 @@
+name: Android APK + mise à jour interne
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Préparer Gradle
+        run: chmod +x gradlew
+
+      - name: Compiler APK debug installable
+        run: ./gradlew assembleDebug -PAUTO_VERSION_CODE=${{ github.run_number }} -PAUTO_VERSION_NAME=1.0.${{ github.run_number }}
+
+      - name: Renommer APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk PlanTravail-Orsay-v1.0.${{ github.run_number }}.apk
+
+      - name: Publier Artifact GitHub Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: PlanTravail-Orsay-v1.0.${{ github.run_number }}
+          path: PlanTravail-Orsay-v1.0.${{ github.run_number }}.apk
+          if-no-files-found: error
+
+      - name: Publier dans le circuit de mise à jour interne
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: Plan Travail Orsay v1.0.${{ github.run_number }}
+          body: |
+            Mise à jour automatique de Plan Travail Orsay.
+            Les données locales existantes sont conservées lors de l'installation de l'APK par-dessus la version précédente.
+          files: PlanTravail-Orsay-v1.0.${{ github.run_number }}.apk
+          make_latest: true
