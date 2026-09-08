@@ -41,7 +41,7 @@
                 android:layout_width="0dp"
                 android:layout_height="48dp"
                 android:layout_weight="1"
-                android:hint="Rechercher une rue d'Orsay"
+                android:hint="Ex : Alain Fournier, Guy Môquet"
                 android:singleLine="true"
                 android:imeOptions="actionSearch"
                 android:inputType="text"
@@ -108,7 +108,7 @@
             android:textSize="12sp" />
     </LinearLayout>
 
-    <org.osmdroid.views.MapView
+    <com.chasmet.plantravail.OrsayMapView
         android:id="@+id/map"
         android:layout_width="match_parent"
         android:layout_height="0dp"
