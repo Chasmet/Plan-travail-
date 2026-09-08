@@ -30,6 +30,35 @@
             android:textColor="#CCCCCC"
             android:textSize="13sp" />
 
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="horizontal">
+
+            <EditText
+                android:id="@+id/etStreetSearch"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:hint="Rechercher une rue d'Orsay"
+                android:singleLine="true"
+                android:imeOptions="actionSearch"
+                android:inputType="text"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:textColor="@color/white"
+                android:textColorHint="#AAAAAA"
+                android:background="#333333" />
+
+            <Button
+                android:id="@+id/btnSearch"
+                android:layout_width="wrap_content"
+                android:layout_height="48dp"
+                android:layout_marginStart="6dp"
+                android:text="Chercher" />
+        </LinearLayout>
+
         <HorizontalScrollView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
