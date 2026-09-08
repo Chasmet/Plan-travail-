@@ -30,7 +30,8 @@ public class SettingsActivity extends AppCompatActivity {
         Button check = findViewById(R.id.btnCheckUpdate);
 
         version.setText("Version installée : " + BuildConfig.VERSION_NAME + " (" + BuildConfig.VERSION_CODE + ")");
-        autoUpdate.setChecked(prefs.getBoolean("auto_update", true));
+        boolean autoEnabled = prefs.getBoolean("auto_update", true);
+        autoUpdate.setChecked(autoEnabled);
         mcpUrl.setText(prefs.getString("mcp_url", ""));
 
         autoUpdate.setOnCheckedChangeListener((buttonView, isChecked) -> prefs.edit().putBoolean("auto_update", isChecked).apply());
@@ -39,6 +40,8 @@ public class SettingsActivity extends AppCompatActivity {
             Toast.makeText(this, "Réglages enregistrés", Toast.LENGTH_SHORT).show();
         });
         check.setOnClickListener(v -> UpdateManager.check(this, progress, updateStatus, true));
+
+        if (autoEnabled) UpdateManager.check(this, progress, updateStatus, false);
     }
 
     @Override
