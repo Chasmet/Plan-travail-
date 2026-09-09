@@ -44,6 +44,11 @@ public class WorkDatabase extends SQLiteOpenHelper {
         return getWritableDatabase().delete("work_entries", "street=? AND work_date BETWEEN ? AND ?", new String[]{street, r[0], r[1]});
     }
 
+    public int clearCurrentWeek() {
+        String[] r = weekRange();
+        return getWritableDatabase().delete("work_entries", "work_date BETWEEN ? AND ?", r);
+    }
+
     public String findCurrentWeekStreet(String typed) {
         String wanted = normalize(typed);
         if (wanted.isEmpty()) return null;
