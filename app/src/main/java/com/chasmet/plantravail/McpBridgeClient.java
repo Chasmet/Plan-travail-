@@ -39,20 +39,24 @@ public class McpBridgeClient {
 
     public void sync(List<Street> streets, Callback callback) {
         executor.execute(() -> {
+            SharedPreferences prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
             try {
-                SharedPreferences prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
                 String baseUrl = prefs.getString("mcp_url", PUBLIC_BASE_URL);
                 if (baseUrl == null || baseUrl.trim().isEmpty()) baseUrl = PUBLIC_BASE_URL;
                 baseUrl = normalizeBase(baseUrl.trim());
                 prefs.edit().putString("device_id", DEVICE_ID).putString("mcp_url", baseUrl).apply();
+
+                // Heartbeat d'abord : Render sait immédiatement que le téléphone est réellement en ligne.
+                postState(baseUrl);
 
                 URL url = new URL(baseUrl + "/commands?device_id=" + URLEncoder.encode(DEVICE_ID, "UTF-8"));
                 HttpURLConnection connection = (HttpURLConnection) url.openConnection();
                 connection.setConnectTimeout(12000);
                 connection.setReadTimeout(20000);
                 connection.setRequestMethod("GET");
+                connection.setRequestProperty("Cache-Control", "no-cache");
                 int code = connection.getResponseCode();
-                if (code < 200 || code >= 300) throw new IllegalStateException("HTTP " + code);
+                if (code < 200 || code >= 300) throw new IllegalStateException("GET commandes HTTP " + code);
 
                 StringBuilder json = new StringBuilder();
                 try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
@@ -70,10 +74,22 @@ public class McpBridgeClient {
                         count += applyCommand(baseUrl, command, streets);
                     }
                 }
+
+                // Renvoie l'état final après application pour que ChatGPT voie le résultat réel.
                 postState(baseUrl);
+                prefs.edit()
+                        .putBoolean("render_connected", true)
+                        .putLong("render_last_sync_ms", System.currentTimeMillis())
+                        .putString("render_last_error", "")
+                        .apply();
                 callback.onDone(count);
             } catch (Exception e) {
-                callback.onError(e.getMessage() == null ? "synchronisation impossible" : e.getMessage());
+                String message = e.getMessage() == null ? "synchronisation impossible" : e.getMessage();
+                prefs.edit()
+                        .putBoolean("render_connected", false)
+                        .putString("render_last_error", message)
+                        .apply();
+                callback.onError(message);
             }
         });
     }
@@ -191,6 +207,7 @@ public class McpBridgeClient {
         c.setRequestMethod("POST");
         c.setDoOutput(true);
         c.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
+        c.setRequestProperty("Accept", "application/json");
         byte[] data = body.toString().getBytes(StandardCharsets.UTF_8);
         try (OutputStream os = c.getOutputStream()) { os.write(data); }
         int code = c.getResponseCode();
