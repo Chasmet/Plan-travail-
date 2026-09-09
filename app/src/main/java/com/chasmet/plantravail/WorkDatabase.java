@@ -6,6 +6,7 @@ import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
 
+import java.text.Normalizer;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
@@ -31,53 +32,119 @@ public class WorkDatabase extends SQLiteOpenHelper {
     }
 
     public void addOrUpdate(String street, String date, int color, String source) {
-        ContentValues v = new ContentValues(); v.put("street",street); v.put("work_date",date); v.put("color",color); v.put("source",source);
-        getWritableDatabase().insertWithOnConflict("work_entries",null,v,SQLiteDatabase.CONFLICT_REPLACE);
+        ContentValues v = new ContentValues();
+        v.put("street", street); v.put("work_date", date); v.put("color", color); v.put("source", source);
+        getWritableDatabase().insertWithOnConflict("work_entries", null, v, SQLiteDatabase.CONFLICT_REPLACE);
     }
 
     public boolean isDoneThisWeek(String street) { return getCurrentWeekColors().containsKey(street); }
 
-    public void deleteCurrentWeekStreet(String street) {
+    public int deleteCurrentWeekStreet(String street) {
         String[] r = weekRange();
-        getWritableDatabase().delete("work_entries", "street=? AND work_date BETWEEN ? AND ?", new String[]{street,r[0],r[1]});
+        return getWritableDatabase().delete("work_entries", "street=? AND work_date BETWEEN ? AND ?", new String[]{street, r[0], r[1]});
+    }
+
+    public String findCurrentWeekStreet(String typed) {
+        String wanted = normalize(typed);
+        if (wanted.isEmpty()) return null;
+        String[] r = weekRange();
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT DISTINCT street FROM work_entries WHERE work_date BETWEEN ? AND ?", r)) {
+            String partial = null;
+            while (c.moveToNext()) {
+                String street = c.getString(0);
+                String candidate = normalize(street);
+                if (candidate.equals(wanted)) return street;
+                if (candidate.contains(wanted) || wanted.contains(candidate)) partial = street;
+            }
+            return partial;
+        }
     }
 
     public Map<String,Integer> getCurrentWeekColors() {
-        String[] r=weekRange(); Map<String,Integer> out=new HashMap<>();
-        String sql="SELECT w.street,w.color FROM work_entries w JOIN (SELECT street,MAX(work_date) d FROM work_entries WHERE work_date BETWEEN ? AND ? GROUP BY street)x ON x.street=w.street AND x.d=w.work_date";
-        try(Cursor c=getReadableDatabase().rawQuery(sql,r)){while(c.moveToNext())out.put(c.getString(0),c.getInt(1));} return out;
+        String[] r = weekRange();
+        Map<String,Integer> out = new HashMap<>();
+        String sql = "SELECT w.street,w.color FROM work_entries w JOIN (SELECT street,MAX(work_date) d FROM work_entries WHERE work_date BETWEEN ? AND ? GROUP BY street)x ON x.street=w.street AND x.d=w.work_date";
+        try (Cursor c = getReadableDatabase().rawQuery(sql, r)) { while (c.moveToNext()) out.put(c.getString(0), c.getInt(1)); }
+        return out;
     }
 
     public int getCurrentWeekCount() {
-        String[] r=weekRange(); try(Cursor c=getReadableDatabase().rawQuery("SELECT COUNT(DISTINCT street) FROM work_entries WHERE work_date BETWEEN ? AND ?",r)){return c.moveToFirst()?c.getInt(0):0;}
+        String[] r = weekRange();
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(DISTINCT street) FROM work_entries WHERE work_date BETWEEN ? AND ?", r)) { return c.moveToFirst() ? c.getInt(0) : 0; }
     }
 
     public int getTodayCount() {
-        String today=FORMAT.format(Calendar.getInstance(Locale.FRANCE).getTime());
-        try(Cursor c=getReadableDatabase().rawQuery("SELECT COUNT(DISTINCT street) FROM work_entries WHERE work_date=?",new String[]{today})){return c.moveToFirst()?c.getInt(0):0;}
+        String today = FORMAT.format(Calendar.getInstance(Locale.FRANCE).getTime());
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(DISTINCT street) FROM work_entries WHERE work_date=?", new String[]{today})) { return c.moveToFirst() ? c.getInt(0) : 0; }
     }
 
     public List<String> getTodayStreets() {
-        String today=FORMAT.format(Calendar.getInstance(Locale.FRANCE).getTime()); List<String> out=new ArrayList<>();
-        try(Cursor c=getReadableDatabase().rawQuery("SELECT street FROM work_entries WHERE work_date=? ORDER BY street COLLATE NOCASE",new String[]{today})){while(c.moveToNext())out.add(c.getString(0));} return out;
+        String today = FORMAT.format(Calendar.getInstance(Locale.FRANCE).getTime());
+        List<String> out = new ArrayList<>();
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT street FROM work_entries WHERE work_date=? ORDER BY street COLLATE NOCASE", new String[]{today})) { while (c.moveToNext()) out.add(c.getString(0)); }
+        return out;
     }
 
     public String getLastTodayStreet() {
-        String today=FORMAT.format(Calendar.getInstance(Locale.FRANCE).getTime());
-        try(Cursor c=getReadableDatabase().rawQuery("SELECT street FROM work_entries WHERE work_date=? ORDER BY id DESC LIMIT 1",new String[]{today})){return c.moveToFirst()?c.getString(0):null;}
+        String today = FORMAT.format(Calendar.getInstance(Locale.FRANCE).getTime());
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT street FROM work_entries WHERE work_date=? ORDER BY id DESC LIMIT 1", new String[]{today})) { return c.moveToFirst() ? c.getString(0) : null; }
     }
 
     public void undoLastToday() {
-        String today=FORMAT.format(Calendar.getInstance(Locale.FRANCE).getTime());
-        getWritableDatabase().execSQL("DELETE FROM work_entries WHERE id=(SELECT id FROM work_entries WHERE work_date=? ORDER BY id DESC LIMIT 1)",new Object[]{today});
+        String today = FORMAT.format(Calendar.getInstance(Locale.FRANCE).getTime());
+        getWritableDatabase().execSQL("DELETE FROM work_entries WHERE id=(SELECT id FROM work_entries WHERE work_date=? ORDER BY id DESC LIMIT 1)", new Object[]{today});
     }
 
-    public String getCurrentWeekStart(){return weekRange()[0];}
-    private String[] weekRange(){Calendar s=Calendar.getInstance(Locale.FRANCE);int d=s.get(Calendar.DAY_OF_WEEK);int delta=d==Calendar.SUNDAY?-6:Calendar.MONDAY-d;s.add(Calendar.DAY_OF_MONTH,delta);Calendar e=(Calendar)s.clone();e.add(Calendar.DAY_OF_MONTH,6);return new String[]{FORMAT.format(s.getTime()),FORMAT.format(e.getTime())};}
+    public String getCurrentWeekStart() { return weekRange()[0]; }
 
-    public List<String> getHistory(int limit){List<String> out=new ArrayList<>();try(Cursor c=getReadableDatabase().rawQuery("SELECT work_date,street,source FROM work_entries ORDER BY work_date DESC,id DESC LIMIT ?",new String[]{String.valueOf(limit)})){while(c.moveToNext())out.add(c.getString(0)+"  •  "+c.getString(1)+"  •  "+c.getString(2));}return out;}
+    private String[] weekRange() {
+        Calendar s = Calendar.getInstance(Locale.FRANCE);
+        int d = s.get(Calendar.DAY_OF_WEEK);
+        int delta = d == Calendar.SUNDAY ? -6 : Calendar.MONDAY - d;
+        s.add(Calendar.DAY_OF_MONTH, delta);
+        Calendar e = (Calendar) s.clone();
+        e.add(Calendar.DAY_OF_MONTH, 6);
+        return new String[]{FORMAT.format(s.getTime()), FORMAT.format(e.getTime())};
+    }
 
-    public long addLexicon(String title,String details){ContentValues v=new ContentValues();v.put("title",title.trim());v.put("details",details.trim());v.put("created_at",FORMAT.format(Calendar.getInstance(Locale.FRANCE).getTime()));return getWritableDatabase().insert("lexicon_entries",null,v);}
-    public List<String[]> getLexicon(){List<String[]> out=new ArrayList<>();try(Cursor c=getReadableDatabase().rawQuery("SELECT id,title,details,created_at FROM lexicon_entries ORDER BY title COLLATE NOCASE",null)){while(c.moveToNext())out.add(new String[]{c.getString(0),c.getString(1),c.getString(2),c.getString(3)});}return out;}
-    public void deleteLexicon(long id){getWritableDatabase().delete("lexicon_entries","id=?",new String[]{String.valueOf(id)});}
+    public List<String> getHistory(int limit) {
+        List<String> out = new ArrayList<>();
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT work_date,street,source FROM work_entries ORDER BY work_date DESC,id DESC LIMIT ?", new String[]{String.valueOf(limit)})) {
+            while (c.moveToNext()) out.add(c.getString(0) + "  •  " + c.getString(1) + "  •  " + c.getString(2));
+        }
+        return out;
+    }
+
+    public long addLexicon(String title, String details) {
+        ContentValues v = new ContentValues();
+        v.put("title", title.trim()); v.put("details", details.trim()); v.put("created_at", FORMAT.format(Calendar.getInstance(Locale.FRANCE).getTime()));
+        return getWritableDatabase().insert("lexicon_entries", null, v);
+    }
+
+    public List<String[]> getLexicon() {
+        List<String[]> out = new ArrayList<>();
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT id,title,details,created_at FROM lexicon_entries ORDER BY title COLLATE NOCASE", null)) {
+            while (c.moveToNext()) out.add(new String[]{c.getString(0), c.getString(1), c.getString(2), c.getString(3)});
+        }
+        return out;
+    }
+
+    public void deleteLexicon(long id) { getWritableDatabase().delete("lexicon_entries", "id=?", new String[]{String.valueOf(id)}); }
+
+    private static String normalize(String value) {
+        if (value == null) return "";
+        return Normalizer.normalize(value, Normalizer.Form.NFD)
+                .replaceAll("\\p{M}+", "")
+                .toLowerCase(Locale.FRANCE)
+                .replace("avenue", "")
+                .replace("boulevard", "")
+                .replace("rue", "")
+                .replace("chemin", "")
+                .replace("allee", "")
+                .replace("allée", "")
+                .replace("-", " ")
+                .replace("'", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+    }
 }
