@@ -24,6 +24,8 @@ public class McpBridgeClient {
         void onError(String message);
     }
 
+    public static final String PUBLIC_BASE_URL = "https://sync30-paddle-api.onrender.com/plan-travail";
+    public static final String PUBLIC_MCP_URL = PUBLIC_BASE_URL + "/mcp";
     private static final String DEVICE_ID = "orsay-main";
     private final Context context;
     private final WorkDatabase database;
@@ -38,15 +40,13 @@ public class McpBridgeClient {
         executor.execute(() -> {
             try {
                 SharedPreferences prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
-                String baseUrl = prefs.getString("mcp_url", "");
-                if (baseUrl == null || baseUrl.trim().isEmpty()) {
-                    callback.onError("adresse du pont MCP non configurée dans Réglages");
-                    return;
-                }
+                String baseUrl = prefs.getString("mcp_url", PUBLIC_BASE_URL);
+                if (baseUrl == null || baseUrl.trim().isEmpty()) baseUrl = PUBLIC_BASE_URL;
                 baseUrl = baseUrl.trim();
                 while (baseUrl.endsWith("/")) baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+                if (baseUrl.endsWith("/mcp")) baseUrl = baseUrl.substring(0, baseUrl.length() - 4);
 
-                prefs.edit().putString("device_id", DEVICE_ID).apply();
+                prefs.edit().putString("device_id", DEVICE_ID).putString("mcp_url", baseUrl).apply();
                 URL url = new URL(baseUrl + "/commands?device_id=" + URLEncoder.encode(DEVICE_ID, "UTF-8"));
                 HttpURLConnection connection = (HttpURLConnection) url.openConnection();
                 connection.setConnectTimeout(12000);
@@ -79,7 +79,7 @@ public class McpBridgeClient {
                         String requested = names.optString(j, "");
                         String actual = matchStreetName(requested, streets);
                         if (actual != null) {
-                            database.addOrUpdate(actual, date, DayColor.forDate(date), "MCP");
+                            database.addOrUpdate(actual, date, DayColor.forDate(date), "MCP Render");
                             count++;
                         }
                     }
