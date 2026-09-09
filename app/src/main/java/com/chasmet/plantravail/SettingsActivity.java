@@ -13,6 +13,7 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.SwitchCompat;
 import androidx.core.content.ContextCompat;
@@ -62,6 +63,7 @@ public class SettingsActivity extends AppCompatActivity {
         Button copyPublic = findViewById(R.id.btnCopyPublicMcpUrl);
         Button testPublic = findViewById(R.id.btnRestartPublicTunnel);
         Button check = findViewById(R.id.btnCheckUpdate);
+        Button resetWeek = findViewById(R.id.btnResetWeek);
 
         prefs.edit().putString("mcp_url", McpBridgeClient.PUBLIC_BASE_URL).apply();
         version.setText("Version installée : " + BuildConfig.VERSION_NAME + " (" + BuildConfig.VERSION_CODE + ")");
@@ -88,12 +90,29 @@ public class SettingsActivity extends AppCompatActivity {
 
         testPublic.setOnClickListener(v -> testPublicServer());
         check.setOnClickListener(v -> UpdateManager.check(this, progress, updateStatus, true));
+        resetWeek.setOnClickListener(v -> confirmResetWeek());
 
         if (mcpEnabled) startMcpServer();
         refreshMcpStatus();
         refreshPublicUrl();
         refreshRenderStatus();
         if (autoEnabled) UpdateManager.check(this, progress, updateStatus, false);
+    }
+
+    private void confirmResetWeek() {
+        new AlertDialog.Builder(this)
+                .setTitle("Remettre la semaine à zéro ?")
+                .setMessage("Tous les traçages et compteurs de la semaine en cours seront supprimés. Le lexique sera conservé.")
+                .setNegativeButton("Annuler", null)
+                .setPositiveButton("RESET", (dialog, which) -> {
+                    WorkDatabase database = new WorkDatabase(this);
+                    int deleted = database.clearCurrentWeek();
+                    database.close();
+                    Toast.makeText(this, deleted + " traçage(s) supprimé(s) • semaine à zéro", Toast.LENGTH_LONG).show();
+                    Intent intent = new Intent(this, McpServerService.class).setAction(McpServerService.ACTION_START);
+                    ContextCompat.startForegroundService(this, intent);
+                })
+                .show();
     }
 
     private void refreshPublicUrl() {
