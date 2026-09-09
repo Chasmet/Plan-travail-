@@ -21,16 +21,6 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Intégrer le tunnel HTTPS public ARM64
-        run: |
-          mkdir -p app/src/main/jniLibs/arm64-v8a
-          curl -fL --retry 3 \
-            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 \
-            -o app/src/main/jniLibs/arm64-v8a/libcloudflared.so
-          chmod +x app/src/main/jniLibs/arm64-v8a/libcloudflared.so
-          file app/src/main/jniLibs/arm64-v8a/libcloudflared.so
-          test -s app/src/main/jniLibs/arm64-v8a/libcloudflared.so
-
       - name: Préparer Gradle
         run: chmod +x gradlew
 
@@ -52,9 +42,12 @@ jobs:
             app/build/outputs/apk/release/app-release-unsigned.apk
           "$BUILD_TOOLS/apksigner" verify --verbose "PlanTravail-Orsay-v1.0.${{ github.run_number }}.apk"
 
-      - name: Vérifier le tunnel dans l'APK
+      - name: Vérifier absence de tunnel tiers
         run: |
-          unzip -l "PlanTravail-Orsay-v1.0.${{ github.run_number }}.apk" | grep 'lib/arm64-v8a/libcloudflared.so'
+          if unzip -l "PlanTravail-Orsay-v1.0.${{ github.run_number }}.apk" | grep -qi cloudflared; then
+            echo "Dépendance Cloudflare détectée" >&2
+            exit 1
+          fi
 
       - name: Publier Artifact GitHub Actions
         uses: actions/upload-artifact@v4
@@ -70,7 +63,8 @@ jobs:
           name: Plan Travail Orsay v1.0.${{ github.run_number }}
           body: |
             Mise à jour automatique de Plan Travail Orsay.
-            Le serveur MCP intégré crée désormais lui-même une adresse HTTPS publique sans clé API ni authentification.
+            Le serveur MCP est désormais hébergé directement dans l'application, sans Cloudflare, Render ni tunnel tiers.
+            L'application expose directement le port MCP du téléphone lorsque le réseau le permet.
             Toutes les versions utilisent la même signature Android afin de conserver les données.
           files: PlanTravail-Orsay-v1.0.${{ github.run_number }}.apk
           make_latest: true
