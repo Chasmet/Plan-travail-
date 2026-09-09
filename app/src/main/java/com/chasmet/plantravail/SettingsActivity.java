@@ -1,9 +1,10 @@
 package com.chasmet.plantravail;
 
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.os.Build;
 import android.os.Bundle;
 import android.widget.Button;
 import android.widget.EditText;
@@ -18,7 +19,9 @@ import androidx.core.content.ContextCompat;
 public class SettingsActivity extends AppCompatActivity {
     private SharedPreferences prefs;
     private TextView mcpStatus;
+    private TextView publicMcpUrl;
     private Button mcpStartStop;
+    private EditText mcpUrl;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -32,8 +35,10 @@ public class SettingsActivity extends AppCompatActivity {
         SwitchCompat autoUpdate = findViewById(R.id.switchAutoUpdate);
         SwitchCompat mcpServer = findViewById(R.id.switchMcpServer);
         mcpStatus = findViewById(R.id.tvMcpServerStatus);
+        publicMcpUrl = findViewById(R.id.tvPublicMcpUrl);
         mcpStartStop = findViewById(R.id.btnMcpStartStop);
-        EditText mcpUrl = findViewById(R.id.etMcpUrl);
+        Button copyPublic = findViewById(R.id.btnCopyPublicMcpUrl);
+        mcpUrl = findViewById(R.id.etMcpUrl);
         Button save = findViewById(R.id.btnSave);
         Button check = findViewById(R.id.btnCheckUpdate);
 
@@ -55,14 +60,50 @@ public class SettingsActivity extends AppCompatActivity {
         });
 
         save.setOnClickListener(v -> {
-            prefs.edit().putString("mcp_url", mcpUrl.getText().toString().trim()).apply();
-            Toast.makeText(this, "Réglages enregistrés", Toast.LENGTH_SHORT).show();
+            String url = normalizePublicUrl(mcpUrl.getText().toString().trim());
+            prefs.edit().putString("mcp_url", url).apply();
+            mcpUrl.setText(url);
+            refreshPublicUrl();
+            Toast.makeText(this, "URL publique MCP enregistrée", Toast.LENGTH_SHORT).show();
         });
+
+        copyPublic.setOnClickListener(v -> {
+            String url = getPublicMcpEndpoint();
+            if (url == null) {
+                Toast.makeText(this, "Aucune URL publique configurée", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            clipboard.setPrimaryClip(ClipData.newPlainText("URL MCP Plan Travail Orsay", url));
+            Toast.makeText(this, "URL publique MCP copiée", Toast.LENGTH_SHORT).show();
+        });
+
         check.setOnClickListener(v -> UpdateManager.check(this, progress, updateStatus, true));
 
         if (mcpEnabled) startMcpServer();
         refreshMcpStatus();
+        refreshPublicUrl();
         if (autoEnabled) UpdateManager.check(this, progress, updateStatus, false);
+    }
+
+    private String normalizePublicUrl(String value) {
+        if (value == null) return "";
+        String url = value.trim();
+        while (url.endsWith("/")) url = url.substring(0, url.length() - 1);
+        if (url.endsWith("/mcp")) url = url.substring(0, url.length() - 4);
+        if (url.endsWith("/sse")) url = url.substring(0, url.length() - 4);
+        return url;
+    }
+
+    private String getPublicMcpEndpoint() {
+        String base = normalizePublicUrl(prefs.getString("mcp_url", ""));
+        if (base.isEmpty()) return null;
+        return base + "/mcp";
+    }
+
+    private void refreshPublicUrl() {
+        String endpoint = getPublicMcpEndpoint();
+        publicMcpUrl.setText(endpoint == null ? "Non configurée" : endpoint);
     }
 
     private void startMcpServer() {
@@ -89,6 +130,7 @@ public class SettingsActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         refreshMcpStatus();
+        refreshPublicUrl();
         UpdateManager.resumePendingInstall(this);
     }
 }
