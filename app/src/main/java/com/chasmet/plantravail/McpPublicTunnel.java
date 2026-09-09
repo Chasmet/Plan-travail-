@@ -3,82 +3,87 @@ package com.chasmet.plantravail;
 import android.content.Context;
 import android.content.SharedPreferences;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.InputStreamReader;
+import java.net.Inet6Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
+/**
+ * Conserve le nom historique pour éviter de casser le service Android,
+ * mais ne crée plus aucun tunnel tiers. Cette classe publie seulement
+ * les adresses réseau directement portées par le téléphone.
+ */
 public final class McpPublicTunnel {
-    private static final Pattern PUBLIC_URL = Pattern.compile("https://[a-zA-Z0-9-]+\\.trycloudflare\\.com");
-    private final Context context;
     private final SharedPreferences prefs;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
-    private volatile Process process;
 
     public McpPublicTunnel(Context context) {
-        this.context = context.getApplicationContext();
-        this.prefs = this.context.getSharedPreferences("settings", Context.MODE_PRIVATE);
+        Context app = context.getApplicationContext();
+        prefs = app.getSharedPreferences("settings", Context.MODE_PRIVATE);
     }
 
     public synchronized void start() {
-        if (process != null && process.isAlive()) return;
         prefs.edit()
                 .putString("mcp_public_url", "")
-                .putString("mcp_tunnel_status", "Démarrage de l'adresse publique…")
+                .putString("mcp_public_sse", "")
+                .putString("mcp_tunnel_status", "Recherche d'une adresse Internet directe du téléphone…")
                 .apply();
+
         executor.execute(() -> {
+            String globalIpv6 = null;
+            String localIpv4 = null;
             try {
-                File binary = new File(context.getApplicationInfo().nativeLibraryDir, "libcloudflared.so");
-                if (!binary.exists()) throw new IllegalStateException("module de tunnel absent de l'APK");
-                ProcessBuilder pb = new ProcessBuilder(
-                        binary.getAbsolutePath(),
-                        "tunnel",
-                        "--no-autoupdate",
-                        "--url",
-                        "http://127.0.0.1:8765"
-                );
-                pb.redirectErrorStream(true);
-                process = pb.start();
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                    String line;
-                    boolean found = false;
-                    while ((line = reader.readLine()) != null) {
-                        Matcher m = PUBLIC_URL.matcher(line);
-                        if (m.find()) {
-                            String base = m.group();
-                            prefs.edit()
-                                    .putString("mcp_public_url", base + "/mcp")
-                                    .putString("mcp_public_sse", base + "/sse")
-                                    .putString("mcp_tunnel_status", "Adresse publique active")
-                                    .apply();
-                            found = true;
+                List<NetworkInterface> interfaces = Collections.list(NetworkInterface.getNetworkInterfaces());
+                for (NetworkInterface ni : interfaces) {
+                    if (!ni.isUp() || ni.isLoopback()) continue;
+                    for (InetAddress address : Collections.list(ni.getInetAddresses())) {
+                        if (address.isLoopbackAddress() || address.isLinkLocalAddress()) continue;
+                        String host = address.getHostAddress();
+                        if (host == null || host.isEmpty()) continue;
+                        int scope = host.indexOf('%');
+                        if (scope >= 0) host = host.substring(0, scope);
+
+                        if (address instanceof Inet6Address) {
+                            if (!address.isSiteLocalAddress() && !host.toLowerCase().startsWith("fc") && !host.toLowerCase().startsWith("fd")) {
+                                globalIpv6 = host;
+                                break;
+                            }
+                        } else if (localIpv4 == null && address.isSiteLocalAddress()) {
+                            localIpv4 = host;
                         }
                     }
-                    if (!found && (process == null || !process.isAlive())) {
-                        prefs.edit().putString("mcp_tunnel_status", "Tunnel public arrêté").apply();
-                    }
+                    if (globalIpv6 != null) break;
                 }
+
+                SharedPreferences.Editor edit = prefs.edit();
+                if (globalIpv6 != null) {
+                    String endpoint = "http://[" + globalIpv6 + "]:8765/mcp";
+                    edit.putString("mcp_public_url", endpoint)
+                            .putString("mcp_tunnel_status", "Adresse IPv6 directe détectée. Serveur fourni uniquement par l'application.")
+                            .putString("mcp_direct_ipv6", globalIpv6);
+                } else if (localIpv4 != null) {
+                    String endpoint = "http://" + localIpv4 + ":8765/mcp";
+                    edit.putString("mcp_public_url", endpoint)
+                            .putString("mcp_tunnel_status", "Serveur autonome actif. Le réseau actuel ne fournit pas d'adresse Internet directement joignable; adresse Wi‑Fi locale affichée.")
+                            .putString("mcp_local_url", endpoint);
+                } else {
+                    edit.putString("mcp_tunnel_status", "Serveur autonome actif, mais aucune adresse réseau exploitable détectée.");
+                }
+                edit.apply();
             } catch (Exception e) {
-                prefs.edit()
-                        .putString("mcp_public_url", "")
-                        .putString("mcp_tunnel_status", "Erreur tunnel : " + (e.getMessage() == null ? "inconnue" : e.getMessage()))
-                        .apply();
+                prefs.edit().putString("mcp_tunnel_status", "Détection réseau impossible : " + (e.getMessage() == null ? "erreur inconnue" : e.getMessage())).apply();
             }
         });
     }
 
     public synchronized void stop() {
-        if (process != null) {
-            process.destroy();
-            process = null;
-        }
         prefs.edit()
                 .putString("mcp_public_url", "")
                 .putString("mcp_public_sse", "")
-                .putString("mcp_tunnel_status", "Tunnel public arrêté")
+                .putString("mcp_tunnel_status", "Serveur autonome arrêté")
                 .apply();
     }
 }
