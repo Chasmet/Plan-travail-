@@ -46,7 +46,6 @@ public class McpBridgeClient {
                 baseUrl = normalizeBase(baseUrl.trim());
                 prefs.edit().putString("device_id", DEVICE_ID).putString("mcp_url", baseUrl).apply();
 
-                // Heartbeat d'abord : Render sait immédiatement que le téléphone est réellement en ligne.
                 postState(baseUrl);
 
                 URL url = new URL(baseUrl + "/commands?device_id=" + URLEncoder.encode(DEVICE_ID, "UTF-8"));
@@ -75,7 +74,6 @@ public class McpBridgeClient {
                     }
                 }
 
-                // Renvoie l'état final après application pour que ChatGPT voie le résultat réel.
                 postState(baseUrl);
                 prefs.edit()
                         .putBoolean("render_connected", true)
@@ -136,7 +134,9 @@ public class McpBridgeClient {
             } else if ("add_lexicon".equals(action)) {
                 String title = command.optString("title", "").trim();
                 String details = command.optString("details", "").trim();
-                if (title.isEmpty() || details.isEmpty()) throw new IllegalStateException("Lexique incomplet");
+                if (title.isEmpty() && !details.isEmpty()) title = details;
+                if (details.isEmpty() && !title.isEmpty()) details = title;
+                if (title.isEmpty()) throw new IllegalStateException("Lexique incomplet");
                 long id = database.addLexicon(title, details);
                 JSONObject item = new JSONObject();
                 item.put("id", id);
@@ -144,6 +144,14 @@ public class McpBridgeClient {
                 item.put("details", details);
                 applied.put(item);
                 changed++;
+            } else if ("reset_week".equals(action)) {
+                int deleted = database.clearCurrentWeek();
+                JSONObject item = new JSONObject();
+                item.put("deleted", deleted);
+                item.put("week_start", database.getCurrentWeekStart());
+                item.put("lexicon_preserved", true);
+                applied.put(item);
+                changed += deleted;
             } else {
                 throw new IllegalStateException("Action inconnue : " + action);
             }
