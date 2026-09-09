@@ -30,6 +30,10 @@
         <Button android:id="@+id/btnRestartPublicTunnel" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="Tester le serveur public" />
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="À coller dans ChatGPT > URL du serveur > Aucune authentification. Cette adresse HTTPS est fixe et hébergée sur Render." android:textColor="#AAAAAA" />
 
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="24dp" android:text="Remise à zéro" android:textColor="@color/white" android:textStyle="bold" android:textSize="18sp" />
+        <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:text="Efface tous les traçages de la semaine en cours et remet les compteurs à zéro. Le lexique est conservé." android:textColor="#AAAAAA" />
+        <Button android:id="@+id/btnResetWeek" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:text="RESET SEMAINE À ZÉRO" />
+
         <EditText android:id="@+id/etMcpUrl" android:layout_width="1dp" android:layout_height="1dp" android:visibility="gone" />
         <Button android:id="@+id/btnSave" android:layout_width="1dp" android:layout_height="1dp" android:visibility="gone" android:text="Enregistrer" />
 
