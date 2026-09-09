@@ -6,6 +6,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.widget.Button;
 import android.widget.ProgressBar;
 import android.widget.TextView;
@@ -20,6 +22,9 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -30,6 +35,14 @@ public class SettingsActivity extends AppCompatActivity {
     private TextView tunnelStatus;
     private Button mcpStartStop;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Runnable statusLoop = new Runnable() {
+        @Override public void run() {
+            refreshMcpStatus();
+            refreshRenderStatus();
+            handler.postDelayed(this, 3000);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -79,12 +92,27 @@ public class SettingsActivity extends AppCompatActivity {
         if (mcpEnabled) startMcpServer();
         refreshMcpStatus();
         refreshPublicUrl();
+        refreshRenderStatus();
         if (autoEnabled) UpdateManager.check(this, progress, updateStatus, false);
     }
 
     private void refreshPublicUrl() {
-        tunnelStatus.setText("Serveur HTTPS Render permanent • aucune authentification");
         publicMcpUrl.setText(McpBridgeClient.PUBLIC_MCP_URL);
+    }
+
+    private void refreshRenderStatus() {
+        boolean connected = prefs.getBoolean("render_connected", false);
+        long last = prefs.getLong("render_last_sync_ms", 0L);
+        String error = prefs.getString("render_last_error", "");
+        long age = last > 0 ? System.currentTimeMillis() - last : Long.MAX_VALUE;
+        if (connected && age < 15000) {
+            String time = new SimpleDateFormat("HH:mm:ss", Locale.FRANCE).format(new Date(last));
+            tunnelStatus.setText("Connecté à Render ✓ • ChatGPT MCP prêt • dernière synchro " + time);
+        } else if (error != null && !error.trim().isEmpty()) {
+            tunnelStatus.setText("Render non connecté ✗ • " + error);
+        } else {
+            tunnelStatus.setText("Connexion à Render en cours…");
+        }
     }
 
     private void testPublicServer() {
@@ -103,7 +131,7 @@ public class SettingsActivity extends AppCompatActivity {
                         String line; while ((line = r.readLine()) != null) body.append(line);
                     }
                 }
-                runOnUiThread(() -> tunnelStatus.setText(code >= 200 && code < 300 ? "Serveur Render en ligne ✓" : "Serveur Render indisponible • HTTP " + code));
+                runOnUiThread(() -> tunnelStatus.setText(code >= 200 && code < 300 ? "Serveur Render en ligne ✓ • attente du téléphone…" : "Serveur Render indisponible • HTTP " + code));
             } catch (Exception e) {
                 runOnUiThread(() -> tunnelStatus.setText("Serveur Render indisponible : " + (e.getMessage() == null ? "erreur réseau" : e.getMessage())));
             }
@@ -126,14 +154,20 @@ public class SettingsActivity extends AppCompatActivity {
 
     private void refreshMcpStatus() {
         boolean running = prefs.getBoolean("mcp_server_running", false);
-        mcpStatus.setText(running ? "Serveur local actif • 127.0.0.1:8765" : "Serveur local arrêté");
-        mcpStartStop.setText(running ? "Arrêter le serveur local" : "Démarrer le serveur local");
+        mcpStatus.setText(running ? "Service Android actif • synchronisation automatique" : "Service Android arrêté");
+        mcpStartStop.setText(running ? "Arrêter le service Android" : "Démarrer le service Android");
     }
 
     @Override protected void onResume() {
         super.onResume();
-        refreshMcpStatus();
+        handler.removeCallbacks(statusLoop);
+        handler.post(statusLoop);
         refreshPublicUrl();
         UpdateManager.resumePendingInstall(this);
+    }
+
+    @Override protected void onPause() {
+        handler.removeCallbacks(statusLoop);
+        super.onPause();
     }
 }
