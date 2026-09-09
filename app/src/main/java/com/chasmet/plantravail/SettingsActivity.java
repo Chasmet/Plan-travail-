@@ -6,8 +6,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.widget.Button;
 import android.widget.ProgressBar;
 import android.widget.TextView;
@@ -17,20 +15,21 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.SwitchCompat;
 import androidx.core.content.ContextCompat;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 public class SettingsActivity extends AppCompatActivity {
     private SharedPreferences prefs;
     private TextView mcpStatus;
     private TextView publicMcpUrl;
     private TextView tunnelStatus;
     private Button mcpStartStop;
-    private final Handler handler = new Handler(Looper.getMainLooper());
-    private final Runnable refreshTask = new Runnable() {
-        @Override public void run() {
-            refreshMcpStatus();
-            refreshPublicUrl();
-            handler.postDelayed(this, 1000);
-        }
-    };
+    private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -48,9 +47,10 @@ public class SettingsActivity extends AppCompatActivity {
         tunnelStatus = findViewById(R.id.tvMcpTunnelStatus);
         mcpStartStop = findViewById(R.id.btnMcpStartStop);
         Button copyPublic = findViewById(R.id.btnCopyPublicMcpUrl);
-        Button restartPublic = findViewById(R.id.btnRestartPublicTunnel);
+        Button testPublic = findViewById(R.id.btnRestartPublicTunnel);
         Button check = findViewById(R.id.btnCheckUpdate);
 
+        prefs.edit().putString("mcp_url", McpBridgeClient.PUBLIC_BASE_URL).apply();
         version.setText("Version installée : " + BuildConfig.VERSION_NAME + " (" + BuildConfig.VERSION_CODE + ")");
         boolean autoEnabled = prefs.getBoolean("auto_update", true);
         boolean mcpEnabled = prefs.getBoolean("mcp_server_auto", true);
@@ -68,23 +68,12 @@ public class SettingsActivity extends AppCompatActivity {
         });
 
         copyPublic.setOnClickListener(v -> {
-            String url = prefs.getString("mcp_public_url", "");
-            if (url == null || url.trim().isEmpty()) {
-                Toast.makeText(this, "Adresse publique encore en création", Toast.LENGTH_SHORT).show();
-                return;
-            }
             ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-            clipboard.setPrimaryClip(ClipData.newPlainText("URL MCP Plan Travail Orsay", url));
-            Toast.makeText(this, "URL MCP copiée", Toast.LENGTH_SHORT).show();
+            clipboard.setPrimaryClip(ClipData.newPlainText("URL MCP Plan Travail Orsay", McpBridgeClient.PUBLIC_MCP_URL));
+            Toast.makeText(this, "URL MCP Render copiée", Toast.LENGTH_SHORT).show();
         });
 
-        restartPublic.setOnClickListener(v -> {
-            prefs.edit().putString("mcp_public_url", "").putString("mcp_public_sse", "").putString("mcp_tunnel_status", "Recréation de l'adresse publique…").apply();
-            stopMcpServer();
-            handler.postDelayed(this::startMcpServer, 700);
-            Toast.makeText(this, "Nouvelle adresse publique en cours de création", Toast.LENGTH_SHORT).show();
-        });
-
+        testPublic.setOnClickListener(v -> testPublicServer());
         check.setOnClickListener(v -> UpdateManager.check(this, progress, updateStatus, true));
 
         if (mcpEnabled) startMcpServer();
@@ -94,14 +83,31 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void refreshPublicUrl() {
-        String endpoint = prefs.getString("mcp_public_url", "");
-        String state = prefs.getString("mcp_tunnel_status", "Préparation de l'adresse publique…");
-        tunnelStatus.setText(state == null ? "" : state);
-        if (endpoint == null || endpoint.trim().isEmpty()) {
-            publicMcpUrl.setText("Création en cours…");
-        } else {
-            publicMcpUrl.setText(endpoint);
-        }
+        tunnelStatus.setText("Serveur HTTPS Render permanent • aucune authentification");
+        publicMcpUrl.setText(McpBridgeClient.PUBLIC_MCP_URL);
+    }
+
+    private void testPublicServer() {
+        tunnelStatus.setText("Test du serveur Render…");
+        executor.execute(() -> {
+            try {
+                URL url = new URL(McpBridgeClient.PUBLIC_BASE_URL + "/health");
+                HttpURLConnection c = (HttpURLConnection) url.openConnection();
+                c.setConnectTimeout(12000);
+                c.setReadTimeout(12000);
+                c.setRequestMethod("GET");
+                int code = c.getResponseCode();
+                StringBuilder body = new StringBuilder();
+                if (code >= 200 && code < 300) {
+                    try (BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8))) {
+                        String line; while ((line = r.readLine()) != null) body.append(line);
+                    }
+                }
+                runOnUiThread(() -> tunnelStatus.setText(code >= 200 && code < 300 ? "Serveur Render en ligne ✓" : "Serveur Render indisponible • HTTP " + code));
+            } catch (Exception e) {
+                runOnUiThread(() -> tunnelStatus.setText("Serveur Render indisponible : " + (e.getMessage() == null ? "erreur réseau" : e.getMessage())));
+            }
+        });
     }
 
     private void startMcpServer() {
@@ -120,19 +126,14 @@ public class SettingsActivity extends AppCompatActivity {
 
     private void refreshMcpStatus() {
         boolean running = prefs.getBoolean("mcp_server_running", false);
-        mcpStatus.setText(running ? "Serveur actif • http://127.0.0.1:8765/mcp" : "Serveur arrêté");
-        mcpStartStop.setText(running ? "Arrêter le serveur" : "Démarrer le serveur");
+        mcpStatus.setText(running ? "Serveur local actif • 127.0.0.1:8765" : "Serveur local arrêté");
+        mcpStartStop.setText(running ? "Arrêter le serveur local" : "Démarrer le serveur local");
     }
 
     @Override protected void onResume() {
         super.onResume();
-        handler.removeCallbacks(refreshTask);
-        handler.post(refreshTask);
+        refreshMcpStatus();
+        refreshPublicUrl();
         UpdateManager.resumePendingInstall(this);
-    }
-
-    @Override protected void onPause() {
-        handler.removeCallbacks(refreshTask);
-        super.onPause();
     }
 }
