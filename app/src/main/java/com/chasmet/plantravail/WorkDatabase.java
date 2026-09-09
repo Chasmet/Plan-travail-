@@ -68,6 +68,16 @@ public class WorkDatabase extends SQLiteOpenHelper {
         return out;
     }
 
+    public List<String[]> getCurrentWeekEntriesDetailed() {
+        String[] r = weekRange();
+        List<String[]> out = new ArrayList<>();
+        String sql = "SELECT street,work_date,color,source FROM work_entries WHERE work_date BETWEEN ? AND ? ORDER BY work_date ASC,street COLLATE NOCASE ASC";
+        try (Cursor c = getReadableDatabase().rawQuery(sql, r)) {
+            while (c.moveToNext()) out.add(new String[]{c.getString(0), c.getString(1), String.valueOf(c.getInt(2)), c.getString(3)});
+        }
+        return out;
+    }
+
     public int getCurrentWeekCount() {
         String[] r = weekRange();
         try (Cursor c = getReadableDatabase().rawQuery("SELECT COUNT(DISTINCT street) FROM work_entries WHERE work_date BETWEEN ? AND ?", r)) { return c.moveToFirst() ? c.getInt(0) : 0; }
