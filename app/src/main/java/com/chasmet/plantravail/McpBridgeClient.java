@@ -15,7 +15,6 @@ import java.nio.charset.StandardCharsets;
 import java.text.Normalizer;
 import java.util.List;
 import java.util.Locale;
-import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -25,6 +24,7 @@ public class McpBridgeClient {
         void onError(String message);
     }
 
+    private static final String DEVICE_ID = "orsay-main";
     private final Context context;
     private final WorkDatabase database;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -46,13 +46,8 @@ public class McpBridgeClient {
                 baseUrl = baseUrl.trim();
                 while (baseUrl.endsWith("/")) baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
 
-                String deviceId = prefs.getString("device_id", "");
-                if (deviceId == null || deviceId.isEmpty()) {
-                    deviceId = UUID.randomUUID().toString();
-                    prefs.edit().putString("device_id", deviceId).apply();
-                }
-
-                URL url = new URL(baseUrl + "/commands?device_id=" + URLEncoder.encode(deviceId, "UTF-8"));
+                prefs.edit().putString("device_id", DEVICE_ID).apply();
+                URL url = new URL(baseUrl + "/commands?device_id=" + URLEncoder.encode(DEVICE_ID, "UTF-8"));
                 HttpURLConnection connection = (HttpURLConnection) url.openConnection();
                 connection.setConnectTimeout(12000);
                 connection.setReadTimeout(20000);
@@ -110,7 +105,7 @@ public class McpBridgeClient {
 
     private static String normalize(String value) {
         if (value == null) return "";
-        String s = Normalizer.normalize(value, Normalizer.Form.NFD)
+        return Normalizer.normalize(value, Normalizer.Form.NFD)
                 .replaceAll("\\p{M}", "")
                 .toLowerCase(Locale.FRANCE)
                 .replace("avenue", "")
@@ -123,6 +118,5 @@ public class McpBridgeClient {
                 .replace("'", " ")
                 .replaceAll("\\s+", " ")
                 .trim();
-        return s;
     }
 }
