@@ -16,11 +16,13 @@ public class McpServerService extends Service {
     public static final String ACTION_STOP = "com.chasmet.plantravail.MCP_STOP";
     private static final String CHANNEL_ID = "mcp_server";
     private EmbeddedMcpServer server;
+    private McpPublicTunnel tunnel;
 
     @Override
     public void onCreate() {
         super.onCreate();
         createChannel();
+        tunnel = new McpPublicTunnel(this);
     }
 
     @Override
@@ -31,29 +33,42 @@ public class McpServerService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        startForeground(8765, buildNotification("Serveur MCP actif sur 127.0.0.1:8765"));
+        startForeground(8765, buildNotification("Serveur MCP + adresse publique actifs"));
         startServer();
         return START_STICKY;
     }
 
     private void startServer() {
-        if (server != null && server.isAlive()) return;
+        if (server != null && server.isAlive()) {
+            if (tunnel != null) tunnel.start();
+            return;
+        }
         try {
             server = new EmbeddedMcpServer(this);
             server.start(5000, false);
-            getSharedPreferences("settings", MODE_PRIVATE).edit().putBoolean("mcp_server_running", true).apply();
+            getSharedPreferences("settings", MODE_PRIVATE).edit()
+                    .putBoolean("mcp_server_running", true)
+                    .putString("mcp_tunnel_status", "Démarrage de l'adresse publique…")
+                    .apply();
+            if (tunnel != null) tunnel.start();
         } catch (Exception e) {
-            getSharedPreferences("settings", MODE_PRIVATE).edit().putBoolean("mcp_server_running", false).apply();
+            getSharedPreferences("settings", MODE_PRIVATE).edit()
+                    .putBoolean("mcp_server_running", false)
+                    .putString("mcp_tunnel_status", "Serveur MCP impossible à démarrer")
+                    .apply();
             stopSelf();
         }
     }
 
     private void stopServer() {
+        if (tunnel != null) tunnel.stop();
         if (server != null) {
             server.stop();
             server = null;
         }
-        getSharedPreferences("settings", MODE_PRIVATE).edit().putBoolean("mcp_server_running", false).apply();
+        getSharedPreferences("settings", MODE_PRIVATE).edit()
+                .putBoolean("mcp_server_running", false)
+                .apply();
     }
 
     @Override
@@ -69,7 +84,7 @@ public class McpServerService extends Service {
     private void createChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "Serveur MCP", NotificationManager.IMPORTANCE_LOW);
-            channel.setDescription("Maintient le serveur MCP local de Plan Travail Orsay actif");
+            channel.setDescription("Maintient le serveur MCP et son adresse publique actifs");
             NotificationManager nm = getSystemService(NotificationManager.class);
             if (nm != null) nm.createNotificationChannel(channel);
         }
