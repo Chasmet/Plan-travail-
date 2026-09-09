@@ -27,6 +27,13 @@ android {
         buildConfig true
     }
 
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging true
+            keepDebugSymbols += ['**/libcloudflared.so']
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
