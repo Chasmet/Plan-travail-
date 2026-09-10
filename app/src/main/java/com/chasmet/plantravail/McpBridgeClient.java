@@ -76,10 +76,13 @@ public class McpBridgeClient {
         try {
             result.put("device_id",DEVICE_ID); result.put("command_id",commandId); result.put("action",action);
             JSONArray applied=new JSONArray();
-            if("mark_streets".equals(action)) {
-                String date=command.optString("date",DayColor.today()); JSONArray names=command.optJSONArray("streets");
-                if(names==null) throw new IllegalStateException("Aucune rue reçue");
-                for(int j=0;j<names.length();j++) { String requested=names.optString(j,"").trim(); String actual=matchStreetName(requested,streets); if(actual==null||actual.trim().isEmpty()) actual=requested; if(!actual.isEmpty()){ int color=DayColor.forDate(date); database.addOrUpdate(actual,date,color,"MCP Render"); JSONObject item=new JSONObject(); item.put("street",actual); item.put("date",date); item.put("color",color); applied.put(item); changed++; } }
+            if("mark_streets".equals(action) || "mark_street_progress".equals(action)) {
+                String date=command.optString("date",DayColor.today());
+                int progress=normalizeProgress(command.optInt("progress",100));
+                JSONArray names=command.optJSONArray("streets");
+                if(names==null){names=new JSONArray();String one=command.optString("street","").trim();if(!one.isEmpty())names.put(one);}
+                if(names.length()==0) throw new IllegalStateException("Aucune rue reçue");
+                for(int j=0;j<names.length();j++) { String requested=names.optString(j,"").trim(); String actual=matchStreetName(requested,streets); if(actual==null||actual.trim().isEmpty()) actual=requested; if(!actual.isEmpty()){ int color=DayColor.forDate(date); database.addOrUpdate(actual,date,color,"MCP Render",progress); int savedProgress=database.getCurrentWeekProgress(actual); JSONObject item=new JSONObject(); item.put("street",actual); item.put("date",date); item.put("color",color); item.put("progress",savedProgress); applied.put(item); changed++; } }
             } else if("delete_street".equals(action)) {
                 String requested=command.optString("street","").trim(); String actual=database.findCurrentWeekStreet(requested); int deleted=actual==null?0:database.deleteCurrentWeekStreet(actual); JSONObject item=new JSONObject(); item.put("street",actual==null?requested:actual); item.put("deleted",deleted); applied.put(item); changed+=deleted;
             } else if("add_lexicon".equals(action) || "add_lexicon_note".equals(action) || "virtual_keyboard_lexicon".equals(action)) {
@@ -107,9 +110,10 @@ public class McpBridgeClient {
     private void postState(String baseUrl) throws Exception {
         JSONObject state=new JSONObject(); state.put("device_id",DEVICE_ID); state.put("app_version",BuildConfig.VERSION_NAME); state.put("week_start",database.getCurrentWeekStart()); state.put("current_week_count",database.getCurrentWeekCount()); state.put("today_count",database.getTodayCount());
         JSONArray today=new JSONArray(); for(String street:database.getTodayStreets()) today.put(street); state.put("today_streets",today);
-        JSONArray week=new JSONArray(); for(String[] row:database.getCurrentWeekEntriesDetailed()){ JSONObject item=new JSONObject(); item.put("street",row[0]); item.put("date",row[1]); item.put("color",Integer.parseInt(row[2])); item.put("day",dayName(row[1])); item.put("source",row[3]); week.put(item);} state.put("current_week_entries",week); state.put("lexicon",lexiconJson()); postJson(baseUrl+"/device-state",state);
+        JSONArray week=new JSONArray(); for(String[] row:database.getCurrentWeekEntriesDetailed()){ JSONObject item=new JSONObject(); item.put("street",row[0]); item.put("date",row[1]); item.put("color",Integer.parseInt(row[2])); item.put("day",dayName(row[1])); item.put("source",row[3]); item.put("progress",row.length>4?Integer.parseInt(row[4]):100); week.put(item);} state.put("current_week_entries",week); state.put("lexicon",lexiconJson()); postJson(baseUrl+"/device-state",state);
     }
 
+    private static int normalizeProgress(int p){if(p<=25)return 25;if(p<=50)return 50;if(p<=75)return 75;return 100;}
     private static void postJson(String url, JSONObject body) throws Exception { HttpURLConnection c=(HttpURLConnection)new URL(url).openConnection(); c.setConnectTimeout(12000); c.setReadTimeout(15000); c.setRequestMethod("POST"); c.setDoOutput(true); c.setRequestProperty("Content-Type","application/json; charset=UTF-8"); c.setRequestProperty("Accept","application/json"); byte[] data=body.toString().getBytes(StandardCharsets.UTF_8); try(OutputStream os=c.getOutputStream()){os.write(data);} int code=c.getResponseCode(); if(code<200||code>=300) throw new IllegalStateException("POST HTTP "+code); c.disconnect(); }
     private static String normalizeBase(String value){String base=value; while(base.endsWith("/"))base=base.substring(0,base.length()-1); if(base.endsWith("/mcp"))base=base.substring(0,base.length()-4); return base;}
     private static String dayName(String date){try{java.text.SimpleDateFormat f=new java.text.SimpleDateFormat("yyyy-MM-dd",Locale.FRANCE);java.util.Calendar c=java.util.Calendar.getInstance(Locale.FRANCE);c.setTime(f.parse(date));String[] n={"Dimanche","Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi"};return n[c.get(java.util.Calendar.DAY_OF_WEEK)-1];}catch(Exception e){return "";}}
