@@ -52,7 +52,9 @@ jobs:
       - name: Vérifier la continuité du certificat de signature
         run: |
           BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
-          ACTUAL_CERT=$("$BUILD_TOOLS/apksigner" verify --print-certs "PlanTravail-Orsay-v1.0.${{ github.run_number }}.apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          # Check the exact certificate passed to apksigner, independent of CLI display formats.
+          openssl x509 -in "$RUNNER_TEMP/testkey.x509.pem" -outform DER -out "$RUNNER_TEMP/signing-cert.der"
+          ACTUAL_CERT=$(sha256sum "$RUNNER_TEMP/signing-cert.der" | cut -d ' ' -f1)
           test "$ACTUAL_CERT" = "$(cat .github/signing-certificate.sha256)"
 
       - name: Vérifier absence de tunnel tiers
