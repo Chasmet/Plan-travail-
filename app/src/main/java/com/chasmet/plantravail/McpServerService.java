@@ -1,6 +1,5 @@
 package com.chasmet.plantravail;
 
-import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
@@ -9,135 +8,137 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
-
-import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
-
 import java.util.ArrayList;
 import java.util.List;
 
 public class McpServerService extends Service {
-    public static final String ACTION_START = "com.chasmet.plantravail.MCP_START";
-    public static final String ACTION_STOP = "com.chasmet.plantravail.MCP_STOP";
-    private static final String CHANNEL_ID = "mcp_server";
-    private EmbeddedMcpServer server;
-    private McpPublicTunnel tunnel;
-    private final Handler handler = new Handler(Looper.getMainLooper());
-    private WorkDatabase database;
-    private StreetRepository streetRepository;
-    private volatile List<Street> cachedStreets = new ArrayList<>();
-    private volatile boolean polling = false;
+  public static final String ACTION_START = "com.chasmet.plantravail.MCP_START",
+      ACTION_STOP = "com.chasmet.plantravail.MCP_STOP";
+  private static final String CHANNEL = "mcp_server";
+  private final Handler handler = new Handler(Looper.getMainLooper());
+  private volatile boolean polling;
+  private volatile List<Street> streets = new ArrayList<>();
+  private McpBridgeClient client;
+  private EmbeddedMcpServer server;
+  private final Runnable poll =
+      new Runnable() {
+        public void run() {
+          if (!polling) return;
+          client.sync(
+              streets,
+              new McpBridgeClient.Callback() {
+                public void onDone(int count) {
+                  if (polling) {
+                    notifyStatus("Synchronisé avec Render");
+                    handler.postDelayed(poll, 6000);
+                  }
+                }
 
-    private final Runnable pollTask = new Runnable() {
-        @Override public void run() {
-            if (!polling) return;
-            List<Street> snapshot = cachedStreets;
-            new McpBridgeClient(McpServerService.this, database).sync(snapshot, new McpBridgeClient.Callback() {
-                @Override public void onDone(int count) {
-                    if (polling) handler.postDelayed(pollTask, 3500);
+                public void onError(String message) {
+                  if (polling) {
+                    notifyStatus("Synchronisation en attente • ouvrir Réglages");
+                    handler.postDelayed(poll, 10000);
+                  }
                 }
-                @Override public void onError(String message) {
-                    if (polling) handler.postDelayed(pollTask, 6000);
-                }
+              });
+        }
+      };
+
+  @Override
+  public void onCreate() {
+    super.onCreate();
+    if (Build.VERSION.SDK_INT >= 26) {
+      NotificationChannel c =
+          new NotificationChannel(
+              CHANNEL, "Synchronisation Plan Travail", NotificationManager.IMPORTANCE_LOW);
+      getSystemService(NotificationManager.class).createNotificationChannel(c);
+    }
+    client = new McpBridgeClient(this, WorkDatabase.getInstance(this));
+    new StreetRepository(this)
+        .load(
+            false,
+            new StreetRepository.Callback() {
+              public void onLoaded(List<Street> result, boolean cache) {
+                streets = result;
+              }
+
+              public void onError(String message) {
+                getSharedPreferences("settings", MODE_PRIVATE)
+                    .edit()
+                    .putString("render_last_error", message)
+                    .apply();
+              }
             });
-        }
-    };
+  }
 
-    @Override
-    public void onCreate() {
-        super.onCreate();
-        createChannel();
-        tunnel = new McpPublicTunnel(this);
-        database = new WorkDatabase(this);
-        streetRepository = new StreetRepository(this);
-        streetRepository.load(false, new StreetRepository.Callback() {
-            @Override public void onLoaded(List<Street> streets, boolean fromCache) {
-                cachedStreets = streets == null ? new ArrayList<>() : streets;
-            }
-            @Override public void onError(String message) { }
-        });
+  @Override
+  public int onStartCommand(Intent intent, int flags, int startId) {
+    if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+      stopForeground(true);
+      stopSelf();
+      return START_NOT_STICKY;
     }
-
-    @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && ACTION_STOP.equals(intent.getAction())) {
-            stopServer();
-            stopForeground(true);
-            stopSelf();
-            return START_NOT_STICKY;
-        }
-        startForeground(8765, buildNotification("MCP Render connecté • synchronisation automatique"));
-        startServer();
-        startPolling();
-        return START_STICKY;
+    if (intent == null
+        && !getSharedPreferences("settings", MODE_PRIVATE).getBoolean("mcp_server_auto", true)) {
+      stopSelf();
+      return START_NOT_STICKY;
     }
-
-    private void startServer() {
-        if (server != null && server.isAlive()) return;
-        try {
-            server = new EmbeddedMcpServer(this);
-            server.start(5000, false);
-            getSharedPreferences("settings", MODE_PRIVATE).edit()
-                    .putBoolean("mcp_server_running", true)
-                    .putString("mcp_url", McpBridgeClient.PUBLIC_BASE_URL)
-                    .putString("mcp_public_url", McpBridgeClient.PUBLIC_MCP_URL)
-                    .putString("mcp_tunnel_status", "Serveur Render permanent actif")
-                    .apply();
-        } catch (Exception e) {
-            getSharedPreferences("settings", MODE_PRIVATE).edit()
-                    .putBoolean("mcp_server_running", false)
-                    .putString("mcp_tunnel_status", "Serveur MCP local impossible à démarrer")
-                    .apply();
-        }
+    startForeground(
+        8765,
+        new NotificationCompat.Builder(this, CHANNEL)
+            .setSmallIcon(R.drawable.ic_launcher)
+            .setContentTitle("Plan Travail Orsay")
+            .setContentText("Connexion en cours…")
+            .setOngoing(true)
+            .build());
+    if (server == null) {
+      try {
+        server = new EmbeddedMcpServer(this);
+        server.start(5000, false);
+      } catch (Exception e) {
+        server = null;
+      }
     }
-
-    private void startPolling() {
-        if (polling) return;
-        polling = true;
-        handler.removeCallbacks(pollTask);
-        handler.post(pollTask);
+    getSharedPreferences("settings", MODE_PRIVATE)
+        .edit()
+        .putBoolean("mcp_server_running", true)
+        .apply();
+    if (!polling) {
+      polling = true;
+      handler.post(poll);
     }
+    return START_STICKY;
+  }
 
-    private void stopServer() {
-        polling = false;
-        handler.removeCallbacks(pollTask);
-        if (tunnel != null) tunnel.stop();
-        if (server != null) {
-            server.stop();
-            server = null;
-        }
-        getSharedPreferences("settings", MODE_PRIVATE).edit()
-                .putBoolean("mcp_server_running", false)
-                .apply();
-    }
-
-    @Override
-    public void onDestroy() {
-        stopServer();
-        if (database != null) database.close();
-        super.onDestroy();
-    }
-
-    @Nullable
-    @Override
-    public IBinder onBind(Intent intent) { return null; }
-
-    private void createChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "Serveur MCP", NotificationManager.IMPORTANCE_LOW);
-            channel.setDescription("Synchronise Plan Travail Orsay avec le serveur MCP Render");
-            NotificationManager nm = getSystemService(NotificationManager.class);
-            if (nm != null) nm.createNotificationChannel(channel);
-        }
-    }
-
-    private Notification buildNotification(String text) {
-        return new NotificationCompat.Builder(this, CHANNEL_ID)
+  private void notifyStatus(String text) {
+    ((NotificationManager) getSystemService(NOTIFICATION_SERVICE))
+        .notify(
+            8765,
+            new NotificationCompat.Builder(this, CHANNEL)
                 .setSmallIcon(R.drawable.ic_launcher)
                 .setContentTitle("Plan Travail Orsay")
                 .setContentText(text)
                 .setOngoing(true)
-                .setPriority(NotificationCompat.PRIORITY_LOW)
-                .build();
-    }
+                .setOnlyAlertOnce(true)
+                .build());
+  }
+
+  @Override
+  public void onDestroy() {
+    polling = false;
+    handler.removeCallbacksAndMessages(null);
+    if (server != null) server.stop();
+    getSharedPreferences("settings", MODE_PRIVATE)
+        .edit()
+        .putBoolean("mcp_server_running", false)
+        .putBoolean("render_connected", false)
+        .apply();
+    super.onDestroy();
+  }
+
+  @Override
+  public IBinder onBind(Intent intent) {
+    return null;
+  }
 }

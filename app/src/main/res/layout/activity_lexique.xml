@@ -18,7 +18,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="6dp"
-        android:text="Ajoute ici les particularités à retenir pour les rues, secteurs ou tournées. Sélectionne une entrée puis appuie sur Supprimer."
+        android:text="Ajoute ici les particularités à retenir pour les rues, secteurs ou tournées. Touche une note pour la modifier. Un appui long permet de la supprimer."
         android:textColor="#CCCCCC"
         android:textSize="14sp" />
 
@@ -43,6 +43,8 @@
             android:layout_marginStart="8dp"
             android:text="Supprimer" />
     </LinearLayout>
+
+    <EditText android:id="@+id/searchLexique" android:layout_width="match_parent" android:layout_height="48dp" android:hint="Rechercher dans le lexique" android:inputType="text" android:singleLine="true" android:textColor="@color/white" android:textColorHint="#AAAAAA" />
 
     <ListView
         android:id="@+id/listLexique"

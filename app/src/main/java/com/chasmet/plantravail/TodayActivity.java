@@ -1,19 +1,66 @@
 package com.chasmet.plantravail;
 
 import android.os.Bundle;
-import android.widget.ArrayAdapter;
-import android.widget.Button;
-import android.widget.ListView;
-import android.widget.TextView;
-import android.widget.Toast;
-import androidx.appcompat.app.AppCompatActivity;
+import android.widget.*;
+import androidx.appcompat.app.AlertDialog;
+import java.util.ArrayList;
 import java.util.List;
 
-public class TodayActivity extends AppCompatActivity {
-    private WorkDatabase db;
-    private TextView summary;
-    private ListView list;
-    @Override protected void onCreate(Bundle b){super.onCreate(b);setContentView(R.layout.activity_today);db=new WorkDatabase(this);summary=findViewById(R.id.tvTodaySummary);list=findViewById(R.id.listToday);Button undo=findViewById(R.id.btnUndoToday);undo.setOnClickListener(v->{String last=db.getLastTodayStreet();if(last==null){Toast.makeText(this,"Aucune rue à annuler aujourd'hui",Toast.LENGTH_SHORT).show();return;}db.undoLastToday();Toast.makeText(this,last+" supprimée",Toast.LENGTH_SHORT).show();refresh();});refresh();}
-    @Override protected void onResume(){super.onResume();if(db!=null)refresh();}
-    private void refresh(){List<String> streets=db.getTodayStreets();String last=db.getLastTodayStreet();summary.setText(db.getTodayCount()+" rue(s) effectuée(s) aujourd'hui"+(last==null?"":"\nDernière : "+last));list.setAdapter(new ArrayAdapter<>(this,android.R.layout.simple_list_item_1,streets));}
+public class TodayActivity extends DataActivity {
+  private WorkDatabase db;
+  private TextView summary;
+  private ListView list;
+
+  @Override
+  protected void onCreate(Bundle b) {
+    super.onCreate(b);
+    setContentView(R.layout.activity_today);
+    db = WorkDatabase.getInstance(this);
+    summary = findViewById(R.id.tvTodaySummary);
+    list = findViewById(R.id.listToday);
+    ((Button) findViewById(R.id.btnUndoToday)).setText("Annuler la dernière modification");
+    findViewById(R.id.btnUndoToday)
+        .setOnClickListener(
+            v -> {
+              String last = db.getLastTodayStreet();
+              if (last == null) {
+                Toast.makeText(
+                        this, "Aucune modification à annuler aujourd’hui", Toast.LENGTH_SHORT)
+                    .show();
+                return;
+              }
+              new AlertDialog.Builder(this)
+                  .setTitle("Annuler : " + last + " ?")
+                  .setMessage("L’état précédent sera rétabli, y compris le pourcentage.")
+                  .setNegativeButton("Conserver", null)
+                  .setPositiveButton(
+                      "Annuler la modification",
+                      (d, w) -> {
+                        db.undoLastToday();
+                        onDataChanged();
+                      })
+                  .show();
+            });
+    onDataChanged();
+  }
+
+  @Override
+  protected void onDataChanged() {
+    if (db == null) return;
+    List<String> display = new ArrayList<>();
+    int complete = 0;
+    for (String[] row : db.getWeekEntriesDetailed(DayColor.today()))
+      if (row[1].equals(DayColor.today())) {
+        display.add(row[0] + " • " + row[4] + " %");
+        if ("100".equals(row[4])) complete++;
+      }
+    String last = db.getLastTodayStreet();
+    summary.setText(
+        display.size()
+            + " rues renseignées aujourd’hui • "
+            + complete
+            + " à 100 %"
+            + (last == null ? "" : "\nDernière modification : " + last));
+    list.setAdapter(new TextRows(this, display));
+  }
 }

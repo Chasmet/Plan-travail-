@@ -1,139 +1,90 @@
 package com.chasmet.plantravail;
 
 import android.content.Context;
-
-import org.json.JSONArray;
-import org.json.JSONObject;
-import org.osmdroid.util.GeoPoint;
-
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import org.json.JSONArray;
+import org.json.JSONObject;
+import org.osmdroid.util.GeoPoint;
 
 public class StreetRepository {
-    public interface Callback {
-        void onLoaded(List<Street> streets, boolean fromCache);
-        void onError(String message);
-    }
+  public interface Callback {
+    void onLoaded(List<Street> streets, boolean fromCache);
 
-    private final Context context;
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
-    private final File cacheFile;
+    void onError(String message);
+  }
 
-    public StreetRepository(Context context) {
-        this.context = context.getApplicationContext();
-        this.cacheFile = new File(this.context.getFilesDir(), "orsay_streets.json");
-    }
+  private final Context context;
 
-    public void load(boolean forceRefresh, Callback callback) {
-        executor.execute(() -> {
-            try {
-                if (!forceRefresh && cacheFile.exists()) {
-                    String cached = readFile(cacheFile);
-                    List<Street> streets = parse(cached);
-                    if (!streets.isEmpty()) {
-                        callback.onLoaded(streets, true);
-                        return;
-                    }
-                }
-                String json = downloadOverpass();
-                writeFile(cacheFile, json);
-                callback.onLoaded(parse(json), false);
-            } catch (Exception e) {
-                try {
-                    if (cacheFile.exists()) {
-                        callback.onLoaded(parse(readFile(cacheFile)), true);
-                        return;
-                    }
-                } catch (Exception ignored) {}
-                callback.onError(e.getMessage() == null ? "Impossible de charger les rues" : e.getMessage());
+  public StreetRepository(Context context) {
+    this.context = context.getApplicationContext();
+  }
+
+  public void load(boolean forceRefresh, Callback callback) {
+    MapDataCache.IO.execute(
+        () -> {
+          try {
+            if (forceRefresh) {
+              try {
+                String query =
+                    "[out:json][timeout:30];area[\"ref:INSEE\"=\"91471\"][\"boundary\"=\"administrative\"]->.a;way[\"highway\"][\"name\"](area.a);out"
+                        + " geom;";
+                String json =
+                    MapDataCache.request(
+                        "https://overpass-api.de/api/interpreter",
+                        ("data=" + URLEncoder.encode(query, "UTF-8"))
+                            .getBytes(StandardCharsets.UTF_8));
+                List<Street> streets = parse(json);
+                MapDataCache.save(context, "orsay_streets.json", json);
+                callback.onLoaded(streets, false);
+                return;
+              } catch (Exception e) {
+                android.util.Log.w(
+                    "StreetRepository", "Actualisation indisponible, catalogue local utilisé", e);
+              }
             }
+            callback.onLoaded(
+                MapDataCache.local(context, "orsay_streets.json", StreetRepository::parse), true);
+          } catch (Exception e) {
+            callback.onError(e.getMessage());
+          }
         });
-    }
+  }
 
-    private String downloadOverpass() throws Exception {
-        String query = "[out:json][timeout:30];area[\"name\"=\"Orsay\"][\"boundary\"=\"administrative\"]->.a;(way[\"highway\"][\"name\"](area.a););out geom;";
-        Exception last = null;
-        String[] endpoints = {
-                "https://overpass-api.de/api/interpreter",
-                "https://overpass.kumi.systems/api/interpreter"
-        };
-        for (String endpoint : endpoints) {
-            try {
-                URL url = new URL(endpoint);
-                HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-                connection.setConnectTimeout(15000);
-                connection.setReadTimeout(40000);
-                connection.setRequestMethod("POST");
-                connection.setDoOutput(true);
-                connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8");
-                byte[] body = ("data=" + URLEncoder.encode(query, "UTF-8")).getBytes(StandardCharsets.UTF_8);
-                try (OutputStream os = connection.getOutputStream()) {
-                    os.write(body);
-                }
-                int code = connection.getResponseCode();
-                if (code < 200 || code >= 300) throw new IllegalStateException("Overpass HTTP " + code);
-                StringBuilder sb = new StringBuilder();
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) sb.append(line);
-                }
-                return sb.toString();
-            } catch (Exception e) {
-                last = e;
-            }
+  static List<Street> parse(String json) throws Exception {
+    List<Street> result = new ArrayList<>();
+    JSONObject root = new JSONObject(json);
+    JSONArray elements = root.optJSONArray("elements");
+    if (elements == null) throw new IllegalArgumentException("Catalogue de rues invalide");
+    for (int i = 0; i < elements.length(); i++) {
+      JSONObject element = elements.optJSONObject(i);
+      if (element == null) continue;
+      JSONObject tags = element.optJSONObject("tags");
+      JSONArray geometry = element.optJSONArray("geometry");
+      if (tags == null || geometry == null) continue;
+      String name = tags.optString("name", "").trim();
+      if (name.isEmpty()) continue;
+      List<GeoPoint> points = new ArrayList<>();
+      for (int j = 0; j < geometry.length(); j++) {
+        JSONObject p = geometry.optJSONObject(j);
+        if (p != null && p.has("lat") && p.has("lon")) {
+          double lat = p.getDouble("lat"), lon = p.getDouble("lon");
+          if (Double.isNaN(lat)
+              || Double.isInfinite(lat)
+              || Double.isNaN(lon)
+              || Double.isInfinite(lon)
+              || lat < 48.65
+              || lat > 48.75
+              || lon < 2.1
+              || lon > 2.25) throw new IllegalArgumentException("Coordonnée hors d’Orsay");
+          points.add(new GeoPoint(lat, lon));
         }
-        throw last == null ? new IllegalStateException("Overpass indisponible") : last;
+      }
+      if (points.size() >= 2) result.add(new Street(name, points));
     }
-
-    private List<Street> parse(String json) throws Exception {
-        List<Street> result = new ArrayList<>();
-        JSONObject root = new JSONObject(json);
-        JSONArray elements = root.optJSONArray("elements");
-        if (elements == null) return result;
-        for (int i = 0; i < elements.length(); i++) {
-            JSONObject element = elements.optJSONObject(i);
-            if (element == null) continue;
-            JSONObject tags = element.optJSONObject("tags");
-            JSONArray geometry = element.optJSONArray("geometry");
-            if (tags == null || geometry == null) continue;
-            String name = tags.optString("name", "").trim();
-            if (name.isEmpty()) continue;
-            List<GeoPoint> points = new ArrayList<>();
-            for (int j = 0; j < geometry.length(); j++) {
-                JSONObject p = geometry.optJSONObject(j);
-                if (p != null && p.has("lat") && p.has("lon")) {
-                    points.add(new GeoPoint(p.optDouble("lat"), p.optDouble("lon")));
-                }
-            }
-            if (points.size() >= 2) result.add(new Street(name, points));
-        }
-        return result;
-    }
-
-    private static String readFile(File file) throws Exception {
-        StringBuilder sb = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
-            String line;
-            while ((line = reader.readLine()) != null) sb.append(line);
-        }
-        return sb.toString();
-    }
-
-    private static void writeFile(File file, String content) throws Exception {
-        try (FileWriter writer = new FileWriter(file, false)) {
-            writer.write(content);
-        }
-    }
+    if (result.isEmpty()) throw new IllegalArgumentException("Catalogue vide");
+    return result;
+  }
 }

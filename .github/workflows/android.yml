@@ -2,11 +2,15 @@ name: Android APK + mise à jour interne
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, fix/audit-2026-09-10 ]
   workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build-release:
@@ -23,6 +27,9 @@ jobs:
 
       - name: Préparer Gradle
         run: chmod +x gradlew
+
+      - name: Tester les corrections et contrôler Android Lint
+        run: ./gradlew testDebugUnitTest lintDebug --max-workers=2
 
       - name: Compiler APK release non signée
         run: ./gradlew assembleRelease -PAUTO_VERSION_CODE=${{ github.run_number }} -PAUTO_VERSION_NAME=1.0.${{ github.run_number }}
@@ -42,6 +49,12 @@ jobs:
             app/build/outputs/apk/release/app-release-unsigned.apk
           "$BUILD_TOOLS/apksigner" verify --verbose "PlanTravail-Orsay-v1.0.${{ github.run_number }}.apk"
 
+      - name: Vérifier la continuité du certificat de signature
+        run: |
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          ACTUAL_CERT=$("$BUILD_TOOLS/apksigner" verify --print-certs "PlanTravail-Orsay-v1.0.${{ github.run_number }}.apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          test "$ACTUAL_CERT" = "$(cat .github/signing-certificate.sha256)"
+
       - name: Vérifier absence de tunnel tiers
         run: |
           if unzip -l "PlanTravail-Orsay-v1.0.${{ github.run_number }}.apk" | grep -qi cloudflared; then
@@ -56,15 +69,31 @@ jobs:
           path: PlanTravail-Orsay-v1.0.${{ github.run_number }}.apk
           if-no-files-found: error
 
+      - name: Rapports de vérification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-${{ github.run_number }}
+          path: |
+            app/build/reports/tests/
+            app/build/test-results/
+            app/build/reports/lint-results-debug.*
+            app/build/verification/
+          if-no-files-found: warn
+
       - name: Publier dans le circuit de mise à jour interne
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.${{ github.run_number }}
           name: Plan Travail Orsay v1.0.${{ github.run_number }}
           body: |
-            Mise à jour automatique de Plan Travail Orsay.
-            Le serveur MCP est désormais hébergé directement dans l'application, sans Cloudflare, Render ni tunnel tiers.
-            L'application expose directement le port MCP du téléphone lorsque le réseau le permet.
-            Toutes les versions utilisent la même signature Android afin de conserver les données.
+            Corrections issues de l’audit de Plan Travail Orsay.
+            Clé et certificat de signature identiques aux versions précédentes : installer par-dessus pour conserver vos données.
+            Marquage corrigé, recherche précise, annulation réelle et consultation des semaines passées.
+            Commandes reçues conservées sur le téléphone, contrôlées après écriture et confirmations réessayées sans doublons.
+            Sauvegarde complète et restauration, lexique modifiable, catalogue hors ligne et exports PNG/PDF A4 complets.
+            Mise à jour reprenable avec contrôle de la version et de la signature de l’APK.
+            Service Render existant conservé. Tests automatisés Android et signature vérifiés avant publication.
           files: PlanTravail-Orsay-v1.0.${{ github.run_number }}.apk
           make_latest: true

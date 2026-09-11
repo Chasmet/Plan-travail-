@@ -2,245 +2,382 @@ package com.chasmet.plantravail;
 
 import android.app.Activity;
 import android.app.DownloadManager;
-import android.content.Context;
-import android.content.Intent;
-import android.content.SharedPreferences;
+import android.content.*;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.Signature;
 import android.database.Cursor;
 import android.net.Uri;
-import android.os.Build;
-import android.os.Environment;
+import android.os.*;
 import android.provider.Settings;
 import android.view.View;
 import android.widget.ProgressBar;
 import android.widget.TextView;
-import android.widget.Toast;
-
 import androidx.appcompat.app.AlertDialog;
-
-import org.json.JSONArray;
-import org.json.JSONObject;
-
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.charset.StandardCharsets;
+import androidx.core.content.FileProvider;
+import java.io.*;
+import java.lang.ref.WeakReference;
+import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import org.json.*;
 
+/** DownloadManager owns the download; a visible screen owns the installer. */
 public final class UpdateManager {
-    private static final String RELEASES_URL = "https://api.github.com/repos/Chasmet/Plan-travail-/releases/latest";
-    private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor();
-    private static final String PREF_DOWNLOAD_ID = "pending_download_id";
-    private static final String PREF_TARGET_VERSION = "pending_target_version";
-    private static final String PREF_INSTALL_LAUNCHED = "pending_install_launched";
+  private static final String RELEASES_URL =
+      "https://api.github.com/repos/Chasmet/Plan-travail-/releases/latest";
+  private static final String ID = "pending_download_id",
+      TARGET = "pending_target_version",
+      LAUNCHED = "pending_install_launched",
+      PERMISSION = "pending_permission_launched";
+  private static final ExecutorService IO = Executors.newSingleThreadExecutor();
+  private static final AtomicBoolean CHECKING = new AtomicBoolean(),
+      VERIFYING = new AtomicBoolean();
+  private static final Handler MAIN = new Handler(Looper.getMainLooper());
+  private static WeakReference<Activity> visible = new WeakReference<>(null);
+  private static boolean dialogShown;
+  private static final Runnable POLL = UpdateManager::poll;
 
-    private UpdateManager() {}
+  private UpdateManager() {}
 
-    public static void check(Activity activity, ProgressBar progress, TextView status, boolean showUpToDate) {
-        cleanupCompletedUpdate(activity);
-        setStatus(activity, progress, status, 0, "Recherche d'une mise à jour…", false);
-        EXECUTOR.execute(() -> {
-            try {
-                HttpURLConnection connection = (HttpURLConnection) new URL(RELEASES_URL).openConnection();
-                connection.setConnectTimeout(12000);
-                connection.setReadTimeout(15000);
-                connection.setRequestProperty("Accept", "application/vnd.github+json");
-                connection.setRequestProperty("User-Agent", "PlanTravail-Android");
-                int code = connection.getResponseCode();
-                if (code == 404) {
-                    if (showUpToDate) setStatus(activity, progress, status, 0, "Aucune version publiée pour le moment.", false);
-                    return;
-                }
-                if (code < 200 || code >= 300) throw new IllegalStateException("GitHub HTTP " + code);
+  private static SharedPreferences prefs(Context c) {
+    return c.getSharedPreferences("settings", Context.MODE_PRIVATE);
+  }
 
-                StringBuilder body = new StringBuilder();
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) body.append(line);
-                }
-                JSONObject release = new JSONObject(body.toString());
-                String tag = release.optString("tag_name", "").replaceFirst("^[vV]", "");
-                String apkUrl = null;
-                JSONArray assets = release.optJSONArray("assets");
-                if (assets != null) {
-                    for (int i = 0; i < assets.length(); i++) {
-                        JSONObject asset = assets.optJSONObject(i);
-                        if (asset != null && asset.optString("name", "").toLowerCase().endsWith(".apk")) {
-                            apkUrl = asset.optString("browser_download_url", null);
-                            break;
-                        }
-                    }
-                }
-                if (apkUrl == null || apkUrl.isEmpty()) {
-                    setStatus(activity, progress, status, 0, "Version publiée sans APK installable.", false);
-                    return;
-                }
-                if (compareVersions(tag, BuildConfig.VERSION_NAME) <= 0) {
-                    clearPending(activity);
-                    if (showUpToDate) setStatus(activity, progress, status, 0, "L'application est à jour.", false);
-                    return;
-                }
+  private static boolean alive(Activity a) {
+    return a != null && !a.isFinishing() && !a.isDestroyed();
+  }
 
-                String finalApkUrl = apkUrl;
-                activity.runOnUiThread(() -> new AlertDialog.Builder(activity)
-                        .setTitle("Mise à jour disponible")
-                        .setMessage("Version " + tag + " disponible. Télécharger et installer sans effacer vos données ?")
-                        .setNegativeButton("Plus tard", null)
-                        .setPositiveButton("Mettre à jour", (dialog, which) -> download(activity, finalApkUrl, tag, progress, status))
-                        .show());
-            } catch (Exception e) {
-                if (showUpToDate) setStatus(activity, progress, status, 0, "Erreur de mise à jour : " + safeMessage(e), false);
+  public static void check(
+      Activity activity, ProgressBar progress, TextView status, boolean manual) {
+    resumePendingInstall(activity);
+    if (prefs(activity).getLong(ID, -1) >= 0) {
+      publish(
+          activity,
+          "Mise à jour en cours : reprendre ou annuler le téléchargement dans Réglages",
+          -1);
+      return;
+    }
+    if (dialogShown || !CHECKING.compareAndSet(false, true)) return;
+    if (!manual
+        && System.currentTimeMillis() - prefs(activity).getLong("update_checked_ms", 0) < 60000) {
+      CHECKING.set(false);
+      return;
+    }
+    publish(activity, "Recherche d’une mise à jour…", -1);
+    WeakReference<Activity> owner = new WeakReference<>(activity);
+    Context app = activity.getApplicationContext();
+    IO.execute(
+        () -> {
+          try {
+            JSONObject release = new JSONObject(MapDataCache.request(RELEASES_URL, null));
+            String tag = release.getString("tag_name").replaceFirst("^[vV]", "");
+            if (!tag.matches("[0-9]+(\\.[0-9]+){1,3}"))
+              throw new IOException("Version GitHub non reconnue");
+            prefs(app).edit().putLong("update_checked_ms", System.currentTimeMillis()).apply();
+            if (compareVersions(tag, BuildConfig.VERSION_NAME) <= 0) {
+              publish(app, "L’application est à jour.", -1);
+              return;
             }
-        });
-    }
-
-    private static void download(Activity activity, String url, String tag, ProgressBar progress, TextView status) {
-        clearPending(activity);
-        DownloadManager manager = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
-        DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
-        request.setTitle("Plan Travail " + tag);
-        request.setDescription("Téléchargement de la mise à jour");
-        request.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-        request.setDestinationInExternalFilesDir(activity, Environment.DIRECTORY_DOWNLOADS, "PlanTravail-" + tag + ".apk");
-        request.setMimeType("application/vnd.android.package-archive");
-        long id = manager.enqueue(request);
-        activity.getSharedPreferences("settings", Context.MODE_PRIVATE).edit()
-                .putLong(PREF_DOWNLOAD_ID, id)
-                .putString(PREF_TARGET_VERSION, tag)
-                .putBoolean(PREF_INSTALL_LAUNCHED, false)
-                .apply();
-        setStatus(activity, progress, status, 0, "Téléchargement 0 %", true);
-        pollDownload(activity, id, progress, status);
-    }
-
-    private static void pollDownload(Activity activity, long id, ProgressBar progress, TextView status) {
-        EXECUTOR.execute(() -> {
-            DownloadManager manager = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
-            boolean done = false;
-            while (!done) {
-                try (Cursor cursor = manager.query(new DownloadManager.Query().setFilterById(id))) {
-                    if (cursor != null && cursor.moveToFirst()) {
-                        int state = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
-                        long total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES));
-                        long current = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR));
-                        int pct = total > 0 ? (int) ((current * 100L) / total) : 0;
-                        setStatus(activity, progress, status, pct, "Téléchargement " + pct + " %", true);
-                        if (state == DownloadManager.STATUS_SUCCESSFUL) {
-                            done = true;
-                            setStatus(activity, progress, status, 100, "Téléchargement terminé. Installation…", true);
-                            install(activity, id);
-                        } else if (state == DownloadManager.STATUS_FAILED) {
-                            done = true;
-                            clearPending(activity);
-                            setStatus(activity, progress, status, 0, "Échec du téléchargement.", false);
-                        }
-                    }
-                } catch (Exception e) {
-                    done = true;
-                    setStatus(activity, progress, status, 0, "Erreur : " + safeMessage(e), false);
-                }
-                if (!done) {
-                    try { Thread.sleep(700); } catch (InterruptedException e) { Thread.currentThread().interrupt(); done = true; }
-                }
+            JSONArray assets = release.getJSONArray("assets");
+            String url = null;
+            for (int i = 0; i < assets.length(); i++) {
+              JSONObject asset = assets.getJSONObject(i);
+              if (asset.getString("name").endsWith(".apk")) {
+                url = asset.getString("browser_download_url");
+                break;
+              }
             }
+            if (url == null
+                || !url.startsWith("https://github.com/Chasmet/Plan-travail-/releases/download/"))
+              throw new IOException("APK de la Release introuvable");
+            String apkUrl = url;
+            MAIN.post(
+                () -> {
+                  Activity a = owner.get();
+                  if (!alive(a) || visible.get() != a || dialogShown) return;
+                  dialogShown = true;
+                  AlertDialog dialog =
+                      new AlertDialog.Builder(a)
+                          .setTitle("Mise à jour " + tag)
+                          .setMessage("Télécharger et installer en conservant vos données ?")
+                          .setNegativeButton("Plus tard", null)
+                          .setPositiveButton("Mettre à jour", (d, w) -> download(a, apkUrl, tag))
+                          .create();
+                  dialog.setOnDismissListener(d -> dialogShown = false);
+                  dialog.show();
+                });
+          } catch (Exception e) {
+            publish(app, "Recherche impossible : " + message(e), -1);
+          } finally {
+            CHECKING.set(false);
+          }
         });
+  }
+
+  private static void download(Activity activity, String url, String tag) {
+    try {
+      DownloadManager manager =
+          (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
+      DownloadManager.Request request = new DownloadManager.Request(Uri.parse(url));
+      request
+          .setTitle("Plan Travail " + tag)
+          .setDescription("Mise à jour de l’application")
+          .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+      request.setDestinationInExternalFilesDir(
+          activity,
+          Environment.DIRECTORY_DOWNLOADS,
+          "PlanTravail-" + tag + "-" + System.currentTimeMillis() + ".apk");
+      request.setMimeType("application/vnd.android.package-archive");
+      long id = manager.enqueue(request);
+      prefs(activity)
+          .edit()
+          .putLong(ID, id)
+          .putString(TARGET, tag)
+          .putBoolean(LAUNCHED, false)
+          .putBoolean(PERMISSION, false)
+          .apply();
+      publish(activity, "Téléchargement en cours…", 0);
+      resumePendingInstall(activity);
+    } catch (Exception e) {
+      publish(activity, "Téléchargement impossible : " + message(e), -1);
     }
+  }
 
-    public static void resumePendingInstall(Activity activity) {
-        SharedPreferences prefs = activity.getSharedPreferences("settings", Context.MODE_PRIVATE);
-        String target = prefs.getString(PREF_TARGET_VERSION, "");
+  public static void resumePendingInstall(Activity activity) {
+    visible = new WeakReference<>(activity);
+    MAIN.removeCallbacks(POLL);
+    render(activity);
+    String target = prefs(activity).getString(TARGET, "");
+    if (!target.isEmpty() && compareVersions(BuildConfig.VERSION_NAME, target) >= 0) {
+      cancel(activity);
+      publish(activity, "Mise à jour installée.", -1);
+      return;
+    }
+    if (prefs(activity).getLong(ID, -1) >= 0) MAIN.post(POLL);
+  }
 
-        if (!target.isEmpty() && compareVersions(BuildConfig.VERSION_NAME, target) >= 0) {
-            clearPending(activity);
-            return;
-        }
+  public static void pause(Activity activity) {
+    if (visible.get() == activity) {
+      visible.clear();
+      MAIN.removeCallbacks(POLL);
+    }
+  }
 
-        long id = prefs.getLong(PREF_DOWNLOAD_ID, -1L);
-        if (id < 0) return;
+  public static void retry(Activity activity) {
+    prefs(activity).edit().putBoolean(LAUNCHED, false).putBoolean(PERMISSION, false).apply();
+    resumePendingInstall(activity);
+    if (prefs(activity).getLong(ID, -1) < 0) check(activity, null, null, true);
+  }
 
-        // Si l'installateur Android a déjà été lancé, ne jamais le relancer en boucle.
-        if (prefs.getBoolean(PREF_INSTALL_LAUNCHED, false)) return;
+  public static void cancel(Context context) {
+    long id = prefs(context).getLong(ID, -1);
+    if (id >= 0) ((DownloadManager) context.getSystemService(Context.DOWNLOAD_SERVICE)).remove(id);
+    prefs(context).edit().remove(ID).remove(TARGET).remove(LAUNCHED).remove(PERMISSION).apply();
+    MAIN.removeCallbacks(POLL);
+    publish(context, "Aucun téléchargement en cours.", -1);
+  }
 
-        DownloadManager manager = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
-        try (Cursor cursor = manager.query(new DownloadManager.Query().setFilterById(id))) {
+  private static void poll() {
+    Activity owner = visible.get();
+    if (!alive(owner)) return;
+    Context app = owner.getApplicationContext();
+    long id = prefs(app).getLong(ID, -1);
+    if (id < 0) return;
+    IO.execute(
+        () -> {
+          int state = -1, percent = 0, reason = 0;
+          try (Cursor cursor =
+              ((DownloadManager) app.getSystemService(Context.DOWNLOAD_SERVICE))
+                  .query(new DownloadManager.Query().setFilterById(id))) {
             if (cursor != null && cursor.moveToFirst()) {
-                int state = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
-                if (state == DownloadManager.STATUS_SUCCESSFUL) install(activity, id);
-                else if (state == DownloadManager.STATUS_FAILED) clearPending(activity);
-            } else {
-                clearPending(activity);
+              state = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
+              reason = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON));
+              long total =
+                  cursor.getLong(
+                      cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES));
+              long done =
+                  cursor.getLong(
+                      cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR));
+              percent = total > 0 ? (int) Math.min(100, done * 100 / total) : 0;
             }
-        }
-    }
-
-    private static void install(Activity activity, long id) {
-        SharedPreferences prefs = activity.getSharedPreferences("settings", Context.MODE_PRIVATE);
-        String target = prefs.getString(PREF_TARGET_VERSION, "");
-        if (!target.isEmpty() && compareVersions(BuildConfig.VERSION_NAME, target) >= 0) {
-            clearPending(activity);
+          } catch (Exception e) {
+            publish(app, "Lecture du téléchargement impossible : " + message(e), -1);
             return;
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !activity.getPackageManager().canRequestPackageInstalls()) {
-            Intent permission = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + activity.getPackageName()));
-            activity.startActivity(permission);
-            Toast.makeText(activity, "Autorisez Plan Travail à installer sa mise à jour, puis revenez dans l'application.", Toast.LENGTH_LONG).show();
-            return;
-        }
-
-        DownloadManager manager = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
-        Uri uri = manager.getUriForDownloadedFile(id);
-        if (uri == null) {
-            clearPending(activity);
-            return;
-        }
-
-        // Marqué avant d'ouvrir l'installateur : un retour dans l'application ne déclenche pas une seconde installation.
-        prefs.edit().putBoolean(PREF_INSTALL_LAUNCHED, true).apply();
-        Intent install = new Intent(Intent.ACTION_VIEW);
-        install.setDataAndType(uri, "application/vnd.android.package-archive");
-        install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
-        activity.startActivity(install);
-    }
-
-    private static void cleanupCompletedUpdate(Activity activity) {
-        SharedPreferences prefs = activity.getSharedPreferences("settings", Context.MODE_PRIVATE);
-        String target = prefs.getString(PREF_TARGET_VERSION, "");
-        if (!target.isEmpty() && compareVersions(BuildConfig.VERSION_NAME, target) >= 0) clearPending(activity);
-    }
-
-    private static void clearPending(Activity activity) {
-        activity.getSharedPreferences("settings", Context.MODE_PRIVATE).edit()
-                .remove(PREF_DOWNLOAD_ID)
-                .remove(PREF_TARGET_VERSION)
-                .remove(PREF_INSTALL_LAUNCHED)
-                .apply();
-    }
-
-    private static int compareVersions(String a, String b) {
-        String[] aa = a.replaceAll("[^0-9.]", "").split("\\.");
-        String[] bb = b.replaceAll("[^0-9.]", "").split("\\.");
-        int max = Math.max(aa.length, bb.length);
-        for (int i = 0; i < max; i++) {
-            int ai = i < aa.length && !aa[i].isEmpty() ? Integer.parseInt(aa[i]) : 0;
-            int bi = i < bb.length && !bb[i].isEmpty() ? Integer.parseInt(bb[i]) : 0;
-            if (ai != bi) return Integer.compare(ai, bi);
-        }
-        return 0;
-    }
-
-    private static void setStatus(Activity activity, ProgressBar progress, TextView status, int value, String text, boolean visible) {
-        activity.runOnUiThread(() -> {
-            if (progress != null) {
-                progress.setVisibility(visible ? View.VISIBLE : View.GONE);
-                progress.setProgress(value);
-            }
-            if (status != null) status.setText(text);
+          }
+          final int result = state, pct = percent, why = reason;
+          MAIN.post(
+              () -> {
+                if (prefs(app).getLong(ID, -1) != id) return;
+                Activity a = visible.get();
+                if (result == -1 || result == DownloadManager.STATUS_FAILED) {
+                  cancel(app);
+                  publish(
+                      app,
+                      result == -1
+                          ? "Téléchargement supprimé. Vous pouvez recommencer."
+                          : "Échec du téléchargement (" + why + "). Vous pouvez recommencer.",
+                      -1);
+                  return;
+                }
+                if (result == DownloadManager.STATUS_SUCCESSFUL) {
+                  publish(app, "APK téléchargé. Reprendre l’installation si nécessaire.", 100);
+                  if (alive(a) && !prefs(app).getBoolean(LAUNCHED, false)) install(a, id);
+                  return;
+                }
+                publish(
+                    app,
+                    result == DownloadManager.STATUS_PAUSED
+                        ? "Téléchargement en pause, attente du réseau…"
+                        : "Téléchargement " + pct + " %",
+                    pct);
+                if (alive(a)) {
+                  MAIN.removeCallbacks(POLL);
+                  MAIN.postDelayed(POLL, 1000);
+                }
+              });
         });
-    }
+  }
 
-    private static String safeMessage(Exception e) {
-        return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+  private static void install(Activity activity, long id) {
+    if (visible.get() != activity) return;
+    if (Build.VERSION.SDK_INT >= 26 && !activity.getPackageManager().canRequestPackageInstalls()) {
+      publish(
+          activity,
+          "Autorisez l’installation des mises à jour, puis revenez dans l’application.",
+          -1);
+      if (prefs(activity).getBoolean(PERMISSION, false)) return;
+      try {
+        prefs(activity).edit().putBoolean(PERMISSION, true).apply();
+        activity.startActivity(
+            new Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:" + activity.getPackageName())));
+      } catch (Exception e) {
+        publish(activity, "Ouvrez les autorisations d’installation dans les réglages Android.", -1);
+      }
+      return;
     }
+    if (!VERIFYING.compareAndSet(false, true)) return;
+    Context app = activity.getApplicationContext();
+    publish(app, "Vérification de l’APK et de sa signature…", 100);
+    IO.execute(
+        () -> {
+          try {
+            Uri downloaded =
+                ((DownloadManager) app.getSystemService(Context.DOWNLOAD_SERVICE))
+                    .getUriForDownloadedFile(id);
+            if (downloaded == null) throw new IOException("Téléchargement introuvable");
+            File dir = new File(app.getCacheDir(), "updates");
+            if (!dir.exists() && !dir.mkdirs()) throw new IOException("Stockage inaccessible");
+            File apk = new File(dir, "verified-" + id + ".apk");
+            try (InputStream in = app.getContentResolver().openInputStream(downloaded);
+                OutputStream out = new FileOutputStream(apk)) {
+              if (in == null) throw new IOException("APK illisible");
+              byte[] buffer = new byte[8192];
+              int n;
+              long size = 0;
+              while ((n = in.read(buffer)) != -1) {
+                size += n;
+                if (size > 128 * 1024 * 1024) throw new IOException("APK trop volumineux");
+                out.write(buffer, 0, n);
+              }
+            }
+            verifyArchive(app, apk, prefs(app).getString(TARGET, ""));
+            MAIN.post(
+                () -> {
+                  Activity a = visible.get();
+                  if (!alive(a) || prefs(app).getLong(ID, -1) != id) return;
+                  try {
+                    Uri uri = FileProvider.getUriForFile(a, a.getPackageName() + ".files", apk);
+                    Intent intent =
+                        new Intent(Intent.ACTION_VIEW)
+                            .setDataAndType(uri, "application/vnd.android.package-archive")
+                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    prefs(app).edit().putBoolean(LAUNCHED, true).commit();
+                    a.startActivity(intent);
+                    publish(
+                        app,
+                        "Installateur ouvert. Si vous annulez, utilisez Reprendre dans Réglages.",
+                        100);
+                  } catch (Exception e) {
+                    prefs(app).edit().putBoolean(LAUNCHED, false).apply();
+                    publish(app, "Installation impossible : " + message(e), -1);
+                  }
+                });
+          } catch (Exception e) {
+            prefs(app).edit().putBoolean(LAUNCHED, true).apply();
+            publish(app, "APK refusé : " + message(e) + ". Annulez puis retéléchargez.", -1);
+          } finally {
+            VERIFYING.set(false);
+          }
+        });
+  }
+
+  @SuppressWarnings("deprecation")
+  static void verifyArchive(Context context, File apk, String expected) throws Exception {
+    PackageManager pm = context.getPackageManager();
+    int flags =
+        Build.VERSION.SDK_INT >= 28
+            ? PackageManager.GET_SIGNING_CERTIFICATES
+            : PackageManager.GET_SIGNATURES;
+    PackageInfo incoming = pm.getPackageArchiveInfo(apk.getAbsolutePath(), flags);
+    PackageInfo installed = pm.getPackageInfo(context.getPackageName(), flags);
+    if (incoming == null || !context.getPackageName().equals(incoming.packageName))
+      throw new IOException("Ce paquet n’est pas Plan Travail");
+    if (incoming.versionCode <= installed.versionCode || !expected.equals(incoming.versionName))
+      throw new IOException("Version incompatible ou déjà installée");
+    Signature[] current = signers(installed), next = signers(incoming);
+    if (current == null || next == null || current.length == 0 || !Arrays.equals(current, next))
+      throw new IOException("La signature diffère de celle de l’application installée");
+  }
+
+  @SuppressWarnings("deprecation")
+  private static Signature[] signers(PackageInfo info) {
+    return Build.VERSION.SDK_INT >= 28
+        ? (info.signingInfo == null ? null : info.signingInfo.getApkContentsSigners())
+        : info.signatures;
+  }
+
+  static int compareVersions(String a, String b) {
+    String[] aa = a.split("\\."), bb = b.split("\\.");
+    for (int i = 0; i < Math.max(aa.length, bb.length); i++) {
+      long x = i < aa.length ? number(aa[i]) : 0, y = i < bb.length ? number(bb[i]) : 0;
+      if (x != y) return Long.compare(x, y);
+    }
+    return 0;
+  }
+
+  private static long number(String part) {
+    try {
+      return Long.parseLong(part);
+    } catch (NumberFormatException e) {
+      return 0;
+    }
+  }
+
+  private static void publish(Context app, String text, int progress) {
+    prefs(app).edit().putString("update_status", text).putInt("update_progress", progress).apply();
+    MAIN.post(
+        () -> {
+          Activity a = visible.get();
+          if (alive(a)) render(a);
+        });
+  }
+
+  private static void render(Activity a) {
+    TextView text = a.findViewById(R.id.tvUpdateStatus);
+    ProgressBar progress = a.findViewById(R.id.progressUpdate);
+    if (text != null) text.setText(prefs(a).getString("update_status", ""));
+    if (progress != null) {
+      int p = prefs(a).getInt("update_progress", -1);
+      progress.setVisibility(p >= 0 ? View.VISIBLE : View.GONE);
+      progress.setProgress(Math.max(0, p));
+    }
+  }
+
+  private static String message(Exception e) {
+    return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+  }
 }
