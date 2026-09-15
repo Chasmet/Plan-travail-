@@ -3,9 +3,7 @@ package com.chasmet.plantravail;
 import android.app.Activity;
 import android.content.Context;
 import android.content.ContextWrapper;
-import android.graphics.Color;
 import android.util.AttributeSet;
-import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.Toast;
@@ -17,7 +15,13 @@ import org.osmdroid.util.GeoPoint;
 import org.osmdroid.views.overlay.MapEventsOverlay;
 import org.osmdroid.views.overlay.Polyline;
 
-/** Commandes de traçage libre directement sur la carte. */
+/**
+ * Outil d'annotation libre du plan.
+ *
+ * <p>Important : un dessin manuel n'est jamais une rue, une route ou une entrée de travail. Il ne
+ * modifie ni le pourcentage d'une rue, ni le nombre de rues commencées/terminées. Il sert uniquement
+ * à dessiner précisément une petite zone compliquée directement sur la carte.
+ */
 public class ManualTraceControls extends LinearLayout {
   private final List<GeoPoint> draft = new ArrayList<>();
   private final List<Polyline> savedLines = new ArrayList<>();
@@ -28,7 +32,6 @@ public class ManualTraceControls extends LinearLayout {
   private MapEventsOverlay eventOverlay;
   private Polyline preview;
   private boolean drawing;
-  private String editingId;
 
   public ManualTraceControls(Context context) {
     super(context);
@@ -47,7 +50,7 @@ public class ManualTraceControls extends LinearLayout {
 
   private void init() {
     setOrientation(HORIZONTAL);
-    traceButton = button("✏ Tracer");
+    traceButton = button("✏ Dessiner");
     undoButton = button("↶ Point");
     validateButton = button("✓ Valider");
     cancelButton = button("✕ Annuler");
@@ -60,7 +63,7 @@ public class ManualTraceControls extends LinearLayout {
     cancelButton.setEnabled(false);
     traceButton.setOnClickListener(v -> toggleDrawing());
     undoButton.setOnClickListener(v -> undoPoint());
-    validateButton.setOnClickListener(v -> chooseDayAndSave());
+    validateButton.setOnClickListener(v -> saveToday());
     cancelButton.setOnClickListener(v -> cancelDraft());
   }
 
@@ -96,7 +99,7 @@ public class ManualTraceControls extends LinearLayout {
               @Override
               public boolean longPressHelper(GeoPoint p) {
                 if (!drawing) return false;
-                if (draft.size() >= 2) chooseDayAndSave();
+                if (draft.size() >= 2) saveToday();
                 return true;
               }
             });
@@ -122,10 +125,12 @@ public class ManualTraceControls extends LinearLayout {
       return;
     }
     drawing = true;
-    editingId = null;
     draft.clear();
-    traceButton.setText("Traçage actif");
-    toast("Touchez la carte pour poser le départ, puis les points du petit tronçon. Appui long = valider.");
+    traceButton.setText("Dessin actif");
+    toast(
+        "Dessine seulement la petite section voulue sur le plan. La couleur est automatiquement celle d'aujourd'hui : "
+            + DayColor.dayName(DayColor.today())
+            + ".");
     updateButtons();
   }
 
@@ -137,54 +142,33 @@ public class ManualTraceControls extends LinearLayout {
 
   private void cancelDraft() {
     drawing = false;
-    editingId = null;
     draft.clear();
     removePreview();
-    traceButton.setText("✏ Tracer");
+    traceButton.setText("✏ Dessiner");
     updateButtons();
   }
 
-  private void chooseDayAndSave() {
+  /** Enregistre uniquement une annotation graphique, datée d'aujourd'hui. */
+  private void saveToday() {
     if (draft.size() < 2) {
       toast("Place au moins 2 points : départ et arrivée.");
       return;
     }
-    String week = currentWeek();
-    String[] labels = new String[7];
-    String[] dates = new String[7];
-    for (int i = 0; i < 7; i++) {
-      dates[i] = DayColor.shift(week, i);
-      labels[i] = DayColor.dayName(dates[i]) + " — " + dates[i];
-    }
-    int todayIndex = 0;
     String today = DayColor.today();
-    for (int i = 0; i < 7; i++) if (today.equals(dates[i])) todayIndex = i;
-    final int defaultIndex = todayIndex;
-    new AlertDialog.Builder(activity)
-        .setTitle(editingId == null ? "Enregistrer le tracé manuel" : "Modifier le tracé manuel")
-        .setSingleChoiceItems(labels, defaultIndex, null)
-        .setNegativeButton("Annuler", null)
-        .setPositiveButton(
-            "Enregistrer",
-            (d, w) -> {
-              AlertDialog dialog = (AlertDialog) d;
-              int checked = dialog.getListView().getCheckedItemPosition();
-              if (checked < 0) checked = defaultIndex;
-              try {
-                store.save(editingId, dates[checked], draft);
-                drawing = false;
-                editingId = null;
-                draft.clear();
-                removePreview();
-                traceButton.setText("✏ Tracer");
-                updateButtons();
-                renderSaved();
-                toast("Petit tronçon enregistré en " + DayColor.dayName(dates[checked]) + ".");
-              } catch (Exception e) {
-                toast(e.getMessage());
-              }
-            })
-        .show();
+    try {
+      // editingId est volontairement null : une annotation validée est un dessin indépendant.
+      // Aucune rue n'est créée et WorkDatabase n'est jamais modifiée ici.
+      store.save(null, today, draft);
+      drawing = false;
+      draft.clear();
+      removePreview();
+      traceButton.setText("✏ Dessiner");
+      updateButtons();
+      renderSaved();
+      toast("Dessin ajouté au plan avec la couleur du " + DayColor.dayName(today) + ".");
+    } catch (Exception e) {
+      toast(e.getMessage());
+    }
   }
 
   private void updatePreview() {
@@ -193,7 +177,7 @@ public class ManualTraceControls extends LinearLayout {
     if (draft.size() >= 2) {
       preview = new Polyline(map);
       preview.setPoints(new ArrayList<>(draft));
-      preview.getOutlinePaint().setColor(Color.WHITE);
+      preview.getOutlinePaint().setColor(DayColor.forDate(DayColor.today()));
       preview.getOutlinePaint().setStrokeWidth(9f);
       map.getOverlays().add(preview);
     }
@@ -214,10 +198,10 @@ public class ManualTraceControls extends LinearLayout {
       line.setPoints(new ArrayList<>(trace.points));
       line.getOutlinePaint().setColor(trace.color);
       line.getOutlinePaint().setStrokeWidth(9f);
-      line.setTitle("Tracé manuel • " + trace.date);
+      line.setTitle("Dessin sur le plan • " + trace.date);
       line.setOnClickListener(
           (polyline, mapView, eventPos) -> {
-            showTraceActions(trace);
+            showDrawingActions(trace);
             return true;
           });
       savedLines.add(line);
@@ -226,37 +210,18 @@ public class ManualTraceControls extends LinearLayout {
     map.invalidate();
   }
 
-  private void showTraceActions(ManualTraceStore.Trace trace) {
-    String[] actions = {"Modifier ce petit tracé", "Supprimer ce petit tracé"};
+  private void showDrawingActions(ManualTraceStore.Trace trace) {
     new AlertDialog.Builder(activity)
-        .setTitle("Tracé manuel • " + DayColor.dayName(trace.date) + " " + trace.date)
-        .setItems(
-            actions,
-            (d, which) -> {
-              if (which == 0) {
-                drawing = true;
-                editingId = trace.id;
-                draft.clear();
-                draft.addAll(trace.points);
-                traceButton.setText("Modification active");
-                updatePreview();
-                updateButtons();
-                toast("Ajoute des points, retire le dernier si besoin, puis valide.");
-              } else {
-                new AlertDialog.Builder(activity)
-                    .setTitle("Supprimer ce petit tracé ?")
-                    .setNegativeButton("Annuler", null)
-                    .setPositiveButton(
-                        "Supprimer",
-                        (x, y) -> {
-                          store.delete(trace.id);
-                          if (trace.id.equals(editingId)) cancelDraft();
-                          renderSaved();
-                        })
-                    .show();
-              }
-            })
+        .setTitle("Dessin du " + DayColor.dayName(trace.date) + " " + trace.date)
+        .setMessage(
+            "Ceci est uniquement un dessin posé sur le plan. Il ne crée aucune rue et ne change aucun pourcentage.")
         .setNegativeButton("Fermer", null)
+        .setPositiveButton(
+            "Supprimer ce dessin",
+            (d, w) -> {
+              store.delete(trace.id);
+              renderSaved();
+            })
         .show();
   }
 
