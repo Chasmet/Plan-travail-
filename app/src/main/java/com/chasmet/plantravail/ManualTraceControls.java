@@ -3,35 +3,32 @@ package com.chasmet.plantravail;
 import android.app.Activity;
 import android.content.Context;
 import android.content.ContextWrapper;
+import android.graphics.Color;
 import android.util.AttributeSet;
+import android.view.MotionEvent;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.Toast;
 import androidx.appcompat.app.AlertDialog;
 import java.util.ArrayList;
 import java.util.List;
-import org.osmdroid.events.MapEventsReceiver;
+import org.osmdroid.api.IGeoPoint;
 import org.osmdroid.util.GeoPoint;
-import org.osmdroid.views.overlay.MapEventsOverlay;
 import org.osmdroid.views.overlay.Polyline;
 
-/**
- * Outil d'annotation libre du plan.
- *
- * <p>Important : un dessin manuel n'est jamais une rue, une route ou une entrée de travail. Il ne
- * modifie ni le pourcentage d'une rue, ni le nombre de rues commencées/terminées. Il sert uniquement
- * à dessiner précisément une petite zone compliquée directement sur la carte.
- */
+/** Outil de dessin libre posé sur le plan. Il ne crée aucune rue et ne modifie aucun avancement. */
 public class ManualTraceControls extends LinearLayout {
+  private static final float MIN_POINT_DISTANCE_PX = 7f;
+
   private final List<GeoPoint> draft = new ArrayList<>();
   private final List<Polyline> savedLines = new ArrayList<>();
   private Button traceButton, undoButton, validateButton, cancelButton;
   private Activity activity;
   private OrsayMapView map;
   private ManualTraceStore store;
-  private MapEventsOverlay eventOverlay;
   private Polyline preview;
   private boolean drawing;
+  private float lastX, lastY;
 
   public ManualTraceControls(Context context) {
     super(context);
@@ -50,10 +47,10 @@ public class ManualTraceControls extends LinearLayout {
 
   private void init() {
     setOrientation(HORIZONTAL);
-    traceButton = button("✏ Dessiner");
-    undoButton = button("↶ Point");
-    validateButton = button("✓ Valider");
-    cancelButton = button("✕ Annuler");
+    traceButton = button("✏ DESSINER");
+    undoButton = button("↶ POINT");
+    validateButton = button("✓ VALIDER");
+    cancelButton = button("✕ ANNULER");
     addView(traceButton);
     addView(undoButton);
     addView(validateButton);
@@ -84,35 +81,69 @@ public class ManualTraceControls extends LinearLayout {
     map = activity.findViewById(R.id.map);
     store = new ManualTraceStore(activity);
     if (map == null) return;
-    eventOverlay =
-        new MapEventsOverlay(
-            new MapEventsReceiver() {
-              @Override
-              public boolean singleTapConfirmedHelper(GeoPoint p) {
-                if (!drawing) return false;
-                draft.add(new GeoPoint(p.getLatitude(), p.getLongitude()));
+
+    // Le dessin se fait réellement au doigt. Hors mode dessin, la carte garde son comportement normal.
+    map.setOnTouchListener(
+        (v, event) -> {
+          if (!drawing) return false;
+          if (event.getPointerCount() > 1) return true;
+
+          switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN:
+              getParent().requestDisallowInterceptTouchEvent(true);
+              draft.clear();
+              addPoint(event.getX(), event.getY(), true);
+              lastX = event.getX();
+              lastY = event.getY();
+              updatePreview();
+              updateButtons();
+              return true;
+
+            case MotionEvent.ACTION_MOVE:
+              float dx = event.getX() - lastX;
+              float dy = event.getY() - lastY;
+              if (dx * dx + dy * dy >= MIN_POINT_DISTANCE_PX * MIN_POINT_DISTANCE_PX) {
+                addPoint(event.getX(), event.getY(), false);
+                lastX = event.getX();
+                lastY = event.getY();
                 updatePreview();
                 updateButtons();
-                return true;
               }
+              return true;
 
-              @Override
-              public boolean longPressHelper(GeoPoint p) {
-                if (!drawing) return false;
-                if (draft.size() >= 2) saveToday();
-                return true;
-              }
-            });
-    map.getOverlays().add(0, eventOverlay);
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_CANCEL:
+              addPoint(event.getX(), event.getY(), false);
+              updatePreview();
+              updateButtons();
+              getParent().requestDisallowInterceptTouchEvent(false);
+              return true;
+
+            default:
+              return true;
+          }
+        });
     renderSaved();
+  }
+
+  private void addPoint(float x, float y, boolean force) {
+    if (map == null) return;
+    if (!force && !draft.isEmpty()) {
+      float dx = x - lastX;
+      float dy = y - lastY;
+      if (dx * dx + dy * dy < 4f) return;
+    }
+    IGeoPoint p = map.getProjection().fromPixels((int) x, (int) y);
+    if (p != null) draft.add(new GeoPoint(p.getLatitude(), p.getLongitude()));
   }
 
   @Override
   protected void onDetachedFromWindow() {
     if (map != null) {
-      if (eventOverlay != null) map.getOverlays().remove(eventOverlay);
+      map.setOnTouchListener(null);
       if (preview != null) map.getOverlays().remove(preview);
       for (Polyline p : savedLines) map.getOverlays().remove(p);
+      map.setMultiTouchControls(true);
       map.invalidate();
     }
     super.onDetachedFromWindow();
@@ -126,11 +157,9 @@ public class ManualTraceControls extends LinearLayout {
     }
     drawing = true;
     draft.clear();
-    traceButton.setText("Dessin actif");
-    toast(
-        "Dessine seulement la petite section voulue sur le plan. La couleur est automatiquement celle d'aujourd'hui : "
-            + DayColor.dayName(DayColor.today())
-            + ".");
+    map.setMultiTouchControls(false);
+    traceButton.setText("DESSIN ACTIF");
+    toast("Maintiens le doigt sur la carte et dessine directement la petite section. La couleur est celle d’aujourd’hui.");
     updateButtons();
   }
 
@@ -144,28 +173,27 @@ public class ManualTraceControls extends LinearLayout {
     drawing = false;
     draft.clear();
     removePreview();
-    traceButton.setText("✏ Dessiner");
+    if (map != null) map.setMultiTouchControls(true);
+    traceButton.setText("✏ DESSINER");
     updateButtons();
   }
 
-  /** Enregistre uniquement une annotation graphique, datée d'aujourd'hui. */
   private void saveToday() {
     if (draft.size() < 2) {
-      toast("Place au moins 2 points : départ et arrivée.");
+      toast("Dessine d’abord une petite section sur la carte.");
       return;
     }
-    String today = DayColor.today();
     try {
-      // editingId est volontairement null : une annotation validée est un dessin indépendant.
-      // Aucune rue n'est créée et WorkDatabase n'est jamais modifiée ici.
+      String today = DayColor.today();
       store.save(null, today, draft);
       drawing = false;
       draft.clear();
       removePreview();
-      traceButton.setText("✏ Dessiner");
+      if (map != null) map.setMultiTouchControls(true);
+      traceButton.setText("✏ DESSINER");
       updateButtons();
       renderSaved();
-      toast("Dessin ajouté au plan avec la couleur du " + DayColor.dayName(today) + ".");
+      toast("Dessin enregistré en " + DayColor.dayName(today) + ", avec la couleur du jour.");
     } catch (Exception e) {
       toast(e.getMessage());
     }
@@ -198,31 +226,27 @@ public class ManualTraceControls extends LinearLayout {
       line.setPoints(new ArrayList<>(trace.points));
       line.getOutlinePaint().setColor(trace.color);
       line.getOutlinePaint().setStrokeWidth(9f);
-      line.setTitle("Dessin sur le plan • " + trace.date);
+      line.setTitle("Dessin manuel • " + trace.date);
       line.setOnClickListener(
           (polyline, mapView, eventPos) -> {
-            showDrawingActions(trace);
+            if (drawing) return true;
+            new AlertDialog.Builder(activity)
+                .setTitle("Dessin manuel • " + DayColor.dayName(trace.date))
+                .setMessage("Ce trait est uniquement un dessin sur le plan. Il ne correspond à aucune rue.")
+                .setNegativeButton("Fermer", null)
+                .setPositiveButton(
+                    "Supprimer",
+                    (d, w) -> {
+                      store.delete(trace.id);
+                      renderSaved();
+                    })
+                .show();
             return true;
           });
       savedLines.add(line);
       map.getOverlays().add(line);
     }
     map.invalidate();
-  }
-
-  private void showDrawingActions(ManualTraceStore.Trace trace) {
-    new AlertDialog.Builder(activity)
-        .setTitle("Dessin du " + DayColor.dayName(trace.date) + " " + trace.date)
-        .setMessage(
-            "Ceci est uniquement un dessin posé sur le plan. Il ne crée aucune rue et ne change aucun pourcentage.")
-        .setNegativeButton("Fermer", null)
-        .setPositiveButton(
-            "Supprimer ce dessin",
-            (d, w) -> {
-              store.delete(trace.id);
-              renderSaved();
-            })
-        .show();
   }
 
   private void updateButtons() {
