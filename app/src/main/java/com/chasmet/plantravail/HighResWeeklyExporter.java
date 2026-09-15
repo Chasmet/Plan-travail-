@@ -56,12 +56,13 @@ public final class HighResWeeklyExporter {
               work = db.getWeekEntriesDetailed(week);
               lexicon = db.getLexicon();
             }
+            List<ManualTraceStore.Trace> manualTraces = new ManualTraceStore(context).forWeek(week);
             File dir = new File(context.getFilesDir(), "exports");
             if (!dir.exists() && !dir.mkdirs()) throw new IOException("Stockage inaccessible");
             String name = "Plan_Travail_Orsay_" + week + "_" + System.currentTimeMillis();
             png = new File(dir, name + ".png");
             pdf = new File(dir, name + ".pdf");
-            PlanDrawing drawing = new PlanDrawing(streets, boundary, work, week);
+            PlanDrawing drawing = new PlanDrawing(streets, boundary, work, manualTraces, week);
             image = Bitmap.createBitmap(2480, 3508, Bitmap.Config.ARGB_8888);
             Canvas canvas = new Canvas(image);
             canvas.scale(2480f / PlanDrawing.WIDTH, 3508f / PlanDrawing.HEIGHT);
