@@ -10,13 +10,24 @@ final class PlanDrawing {
   private final List<Street> streets;
   private final List<GeoPoint> boundary;
   private final List<String[]> entries;
+  private final List<ManualTraceStore.Trace> manualTraces;
   private final String week;
   private final Map<String, Integer> progress = new HashMap<>();
 
   PlanDrawing(List<Street> streets, List<GeoPoint> boundary, List<String[]> entries, String week) {
+    this(streets, boundary, entries, Collections.emptyList(), week);
+  }
+
+  PlanDrawing(
+      List<Street> streets,
+      List<GeoPoint> boundary,
+      List<String[]> entries,
+      List<ManualTraceStore.Trace> manualTraces,
+      String week) {
     this.streets = streets;
     this.boundary = boundary;
     this.entries = entries;
+    this.manualTraces = manualTraces == null ? Collections.emptyList() : manualTraces;
     this.week = week;
     for (String[] r : entries) progress.put(r[0], Integer.parseInt(r[4]));
   }
@@ -36,7 +47,9 @@ final class PlanDrawing {
         progress.size()
             + " rues commencées • "
             + completed
-            + " terminées • avancement estimé par longueur",
+            + " terminées • "
+            + manualTraces.size()
+            + " tracé(s) manuel(s)",
         24,
         51,
         p);
@@ -79,6 +92,12 @@ final class PlanDrawing {
           c.drawPath(path(part, projection), p);
         previous = end;
       }
+    }
+    p.setStrokeWidth(3.4f);
+    for (ManualTraceStore.Trace trace : manualTraces) {
+      if (trace.points.size() < 2) continue;
+      p.setColor(trace.color);
+      c.drawPath(path(trace.points, projection), p);
     }
     c.restore();
     // Labels may extend across the boundary so street names remain readable.
@@ -132,7 +151,7 @@ final class PlanDrawing {
     c.drawText(
         "Rues : © OpenStreetMap contributors (ODbL) • Contour : geo.api.gouv.fr", 24, 810, p);
     c.drawText(
-        "Plan de toutes les rues • sans dépendance aux tuiles • détails et lexique dans le PDF",
+        "Plan de toutes les rues • tracés manuels inclus • détails et lexique dans le PDF",
         24,
         824,
         p);
