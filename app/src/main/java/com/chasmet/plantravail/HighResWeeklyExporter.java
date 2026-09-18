@@ -559,8 +559,7 @@ public final class HighResWeeklyExporter {
               + row[0]
               + " • "
               + row[4]
-              + " % • "
-              + row[3],
+              + " %",
           false,
           DayColor.forDate(row[1]));
 
