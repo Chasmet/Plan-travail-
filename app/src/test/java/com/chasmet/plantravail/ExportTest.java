@@ -30,14 +30,14 @@ public class ExportTest {
               streets.get(0).getName(),
               "2026-09-07",
               String.valueOf(DayColor.forDate("2026-09-07")),
-              "test",
+              "MCP Render",
               "50"
             },
             new String[] {
               streets.get(1).getName(),
               "2026-09-12",
               String.valueOf(DayColor.forDate("2026-09-12")),
-              "test",
+              "manuel",
               "100"
             });
     StringBuilder longNote = new StringBuilder();
@@ -66,6 +66,8 @@ public class ExportTest {
     assertTrue(content.toString().contains("FIN-NOTE-CONSERVEE"));
     assertTrue(content.toString().contains("50 %"));
     assertTrue(content.toString().contains("Samedi"));
+    assertFalse(content.toString().contains("MCP Render"));
+    assertFalse(content.toString().contains("manuel"));
     for (int i = 0; i < 240; i++)
       assertTrue("Missing line " + i, content.toString().contains("Ligne " + i + " :"));
     Bitmap bitmap = Bitmap.createBitmap(1190, 1684, Bitmap.Config.ARGB_8888);
