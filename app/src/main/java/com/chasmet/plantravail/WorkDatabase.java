@@ -23,7 +23,7 @@ public class WorkDatabase extends SQLiteOpenHelper {
   }
 
   public WorkDatabase(Context context) {
-    super(context, "plan_travail.db", null, 4);
+    super(context, "plan_travail.db", null, 5);
     this.context = context.getApplicationContext();
   }
 
@@ -37,6 +37,7 @@ public class WorkDatabase extends SQLiteOpenHelper {
         "CREATE TABLE lexicon_entries (id INTEGER PRIMARY KEY AUTOINCREMENT,title TEXT NOT"
             + " NULL,details TEXT NOT NULL,created_at TEXT NOT NULL)");
     createReliabilityTables(db);
+    createTraceTables(db);
   }
 
   private void createReliabilityTables(SQLiteDatabase db) {
@@ -59,6 +60,7 @@ public class WorkDatabase extends SQLiteOpenHelper {
     if (oldVersion < 3)
       db.execSQL("ALTER TABLE work_entries ADD COLUMN progress INTEGER NOT NULL DEFAULT 100");
     if (oldVersion < 4) createReliabilityTables(db);
+    if (oldVersion < 5) createTraceTables(db);
   }
 
   private static String requireText(String text, String name) {
@@ -246,6 +248,13 @@ public class WorkDatabase extends SQLiteOpenHelper {
         }
         JSONArray before = payload.getJSONArray("before");
         for (int i = 0; i < before.length(); i++) insertWork(before.getJSONObject(i));
+        JSONArray traceKeys = payload.optJSONArray("trace_keys"),
+            traceBefore = payload.optJSONArray("trace_before");
+        if (traceKeys != null)
+          for (int i = 0; i < traceKeys.length(); i++)
+            db.delete("map_traces", "id=?", new String[] {traceKeys.getString(i)});
+        if (traceBefore != null)
+          for (int i = 0; i < traceBefore.length(); i++) insertTrace(traceBefore.getJSONObject(i));
         db.delete("work_actions", "id=?", new String[] {c.getString(0)});
       }
       db.setTransactionSuccessful();
@@ -488,13 +497,15 @@ public class WorkDatabase extends SQLiteOpenHelper {
   }
 
   public synchronized JSONObject snapshot() throws Exception {
+    migrateLegacyTraces();
     SQLiteDatabase db = getReadableDatabase();
     db.beginTransaction();
     try {
       JSONObject out =
           new JSONObject()
               .put("work_entries", rows("work_entries", null, null))
-              .put("lexicon_entries", rows("lexicon_entries", null, null));
+              .put("lexicon_entries", rows("lexicon_entries", null, null))
+              .put("map_traces", traceRows(null));
       db.setTransactionSuccessful();
       return out;
     } finally {
@@ -523,6 +534,7 @@ public class WorkDatabase extends SQLiteOpenHelper {
   }
 
   public synchronized void restoreSnapshot(JSONObject data) throws Exception {
+    migrateLegacyTraces();
     JSONArray work = data.getJSONArray("work_entries"),
         lexicon = data.getJSONArray("lexicon_entries");
     if (work.length() > 100000 || lexicon.length() > 10000)
@@ -539,6 +551,12 @@ public class WorkDatabase extends SQLiteOpenHelper {
       db.delete("work_entries", null, null);
       db.delete("lexicon_entries", null, null);
       db.delete("work_actions", null, null);
+      JSONArray traces = data.optJSONArray("map_traces");
+      if (traces != null) {
+        if (traces.length() > 10000) throw new IllegalArgumentException("Trop de dessins");
+        db.delete("map_traces", null, null);
+        for (int i = 0; i < traces.length(); i++) insertTrace(traces.getJSONObject(i));
+      }
       // Keep command receipts: restoring a backup must never re-execute an acknowledged command.
       for (int i = 0; i < work.length(); i++) insertWork(work.getJSONObject(i));
       for (int i = 0; i < lexicon.length(); i++) {
@@ -548,6 +566,102 @@ public class WorkDatabase extends SQLiteOpenHelper {
         v.put("created_at", r.getString("created_at"));
         db.insertOrThrow("lexicon_entries", null, v);
       }
+      db.setTransactionSuccessful();
+    } finally {
+      db.endTransaction();
+    }
+    notifyChanged();
+  }
+
+  private void createTraceTables(SQLiteDatabase db) {
+    db.execSQL(
+        "CREATE TABLE IF NOT EXISTS map_traces(id TEXT PRIMARY KEY,work_date TEXT NOT NULL,body"
+            + " TEXT NOT NULL)");
+    db.execSQL("CREATE INDEX IF NOT EXISTS map_traces_date_idx ON map_traces(work_date)");
+    db.execSQL("CREATE TABLE IF NOT EXISTS map_trace_meta(name TEXT PRIMARY KEY)");
+  }
+
+  private void migrateLegacyTraces() throws Exception {
+    SQLiteDatabase db = getWritableDatabase();
+    try (Cursor c =
+        db.rawQuery("SELECT name FROM map_trace_meta WHERE name='legacy_migrated'", null)) {
+      if (c.moveToFirst()) return;
+    }
+    android.content.SharedPreferences prefs =
+        context.getSharedPreferences("manual_traces", Context.MODE_PRIVATE);
+    JSONArray legacy = new JSONArray(prefs.getString("items", "[]"));
+    db.beginTransaction();
+    try {
+      for (int i = 0; i < legacy.length(); i++) {
+        JSONObject item = legacy.getJSONObject(i);
+        ManualTraceStore.validate(item);
+        ContentValues v = new ContentValues();
+        v.put("id", item.getString("id"));
+        v.put("work_date", item.getString("date"));
+        v.put("body", item.toString());
+        db.insertWithOnConflict("map_traces", null, v, SQLiteDatabase.CONFLICT_IGNORE);
+      }
+      db.execSQL("INSERT OR IGNORE INTO map_trace_meta(name) VALUES('legacy_migrated')");
+      db.setTransactionSuccessful();
+    } finally {
+      db.endTransaction();
+    }
+    // Original preferences are retained as a safety copy; migration marker is transactional.
+  }
+
+  synchronized JSONArray traceRows(String date) throws Exception {
+    migrateLegacyTraces();
+    JSONArray result = new JSONArray();
+    try (Cursor c =
+        getReadableDatabase()
+            .rawQuery(
+                "SELECT body FROM map_traces"
+                    + (date == null ? "" : " WHERE work_date BETWEEN ? AND ?")
+                    + " ORDER BY work_date,id",
+                date == null ? null : DayColor.weekRange(date))) {
+      while (c.moveToNext()) result.put(new JSONObject(c.getString(0)));
+    }
+    return result;
+  }
+
+  private void insertTrace(JSONObject value) throws Exception {
+    ManualTraceStore.validate(value);
+    ContentValues v = new ContentValues();
+    v.put("id", value.getString("id"));
+    v.put("work_date", value.getString("date"));
+    v.put("body", value.toString());
+    if (getWritableDatabase()
+            .insertWithOnConflict("map_traces", null, v, SQLiteDatabase.CONFLICT_REPLACE)
+        < 0) throw new IllegalStateException("Écriture du dessin refusée");
+  }
+
+  synchronized void writeTrace(JSONObject value, String deleteId) throws Exception {
+    migrateLegacyTraces();
+    String id = value == null ? deleteId : value.getString("id");
+    if (value != null) ManualTraceStore.validate(value);
+    SQLiteDatabase db = getWritableDatabase();
+    db.beginTransaction();
+    try {
+      JSONArray before = new JSONArray();
+      try (Cursor c = db.rawQuery("SELECT body FROM map_traces WHERE id=?", new String[] {id})) {
+        if (c.moveToFirst()) before.put(new JSONObject(c.getString(0)));
+      }
+      if (value == null) {
+        if (before.length() == 0) throw new IllegalArgumentException("Dessin introuvable");
+        db.delete("map_traces", "id=?", new String[] {id});
+      } else insertTrace(value);
+      ContentValues action = new ContentValues();
+      action.put("action_date", DayColor.today());
+      action.put("label", value == null ? "Suppression du dessin" : "Dessin manuel");
+      action.put(
+          "payload",
+          new JSONObject()
+              .put("keys", new JSONArray())
+              .put("before", new JSONArray())
+              .put("trace_keys", new JSONArray().put(id))
+              .put("trace_before", before)
+              .toString());
+      db.insertOrThrow("work_actions", null, action);
       db.setTransactionSuccessful();
     } finally {
       db.endTransaction();

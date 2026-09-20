@@ -39,6 +39,16 @@ public class HighResExportButton extends AppCompatButton {
             Toast.makeText(c, "La carte n'est pas encore prête", Toast.LENGTH_SHORT).show();
             return;
           }
+          if (HighResWeeklyExporter.isBusy()) {
+            Toast.makeText(c, "Un export est déjà en cours", Toast.LENGTH_SHORT).show();
+            return;
+          }
+          if (activity instanceof MainActivity) ((MainActivity) activity).prepareExport();
+          android.app.ProgressDialog progress = new android.app.ProgressDialog(activity);
+          progress.setTitle("Exporter le plan");
+          progress.setMessage("Préparation…");
+          progress.setCancelable(false);
+          progress.show();
           setEnabled(false);
           setText("EXPORT HD…");
           HighResWeeklyExporter.export(
@@ -48,10 +58,13 @@ public class HighResExportButton extends AppCompatButton {
                 @Override
                 public void onProgress(String text) {
                   setText(text);
+                  if (!activity.isFinishing() && !activity.isDestroyed()) progress.setMessage(text);
                 }
 
                 @Override
                 public void onDone(String pngName, String pdfName) {
+                  if (progress.isShowing() && !activity.isDestroyed()) progress.dismiss();
+                  if (activity instanceof MainActivity) ((MainActivity) activity).finishExport();
                   setEnabled(true);
                   setText("EXPORTER HD PNG + PDF");
                   if (activity.isFinishing() || activity.isDestroyed()) return;
@@ -109,6 +122,8 @@ public class HighResExportButton extends AppCompatButton {
 
                 @Override
                 public void onError(String message) {
+                  if (progress.isShowing() && !activity.isDestroyed()) progress.dismiss();
+                  if (activity instanceof MainActivity) ((MainActivity) activity).finishExport();
                   setEnabled(true);
                   setText("EXPORTER HD PNG + PDF");
                   Toast.makeText(c, "Export HD impossible : " + message, Toast.LENGTH_LONG).show();

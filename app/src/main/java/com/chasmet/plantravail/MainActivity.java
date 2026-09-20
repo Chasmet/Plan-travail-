@@ -1,22 +1,19 @@
 package com.chasmet.plantravail;
 
-import android.Manifest;
 import android.content.Intent;
-import android.content.pm.PackageManager;
 import android.graphics.Color;
-import android.location.Location;
-import android.location.LocationListener;
-import android.location.LocationManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.View;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.AutoCompleteTextView;
 import android.widget.Button;
-import android.widget.EditText;
+import android.widget.PopupMenu;
 import android.widget.TextView;
 import android.widget.Toast;
 import androidx.appcompat.app.AlertDialog;
-import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.text.HtmlCompat;
 import java.util.ArrayList;
@@ -30,7 +27,7 @@ import org.osmdroid.views.overlay.Polyline;
 public class MainActivity extends DataActivity {
   private OrsayMapView map;
   private TextView status;
-  private EditText searchBox;
+  private AutoCompleteTextView searchBox;
   private StreetRepository repository;
   private OrsayBoundaryRepository boundaryRepository;
   private WorkDatabase db;
@@ -40,7 +37,11 @@ public class MainActivity extends DataActivity {
   private String selectedWeek = DayColor.today();
   private boolean followCurrentWeek = true;
   private final Handler handler = new Handler(Looper.getMainLooper());
-  private LocationListener locationListener;
+  private MapZoomControls zoom;
+  private ManualTraceControls traces;
+  private String selectedName;
+  private boolean fitted, exporting, exportRemaining;
+  private final Runnable hideUndo = () -> findViewById(R.id.undoPanel).setVisibility(View.GONE);
 
   @Override
   protected void onCreate(Bundle state) {
@@ -65,9 +66,42 @@ public class MainActivity extends DataActivity {
     }
     map.setMultiTouchControls(true);
     map.setMinZoomLevel(14.0);
-    map.setMaxZoomLevel(20.0);
+    map.setMaxZoomLevel(OrsayMapView.MAX_ZOOM);
     map.getController().setCenter(new GeoPoint(48.6993, 2.1875));
     map.getController().setZoom(14.7);
+    zoom = new MapZoomControls(this, map);
+    traces = findViewById(R.id.manualTraceControls);
+    map.setTapListener(this::mapTapped);
+    findViewById(R.id.btnOptions).setOnClickListener(this::options);
+    findViewById(R.id.btnPlan).setOnClickListener(v -> afterDraftCheck(this::closeSelection));
+    findViewById(R.id.btnProgress)
+        .setOnClickListener(
+            v -> {
+              if (selectedName != null) showStreet(selectedName);
+            });
+    findViewById(R.id.btnStreetNote)
+        .setOnClickListener(
+            v -> {
+              if (selectedName != null)
+                startActivity(
+                    new Intent(this, LexiqueActivity.class).putExtra("street", selectedName));
+            });
+    findViewById(R.id.btnCloseSelection).setOnClickListener(v -> closeSelection());
+    findViewById(R.id.btnUndo)
+        .setOnClickListener(
+            v -> {
+              db.undoLastToday();
+              findViewById(R.id.undoPanel).setVisibility(View.GONE);
+              onDataChanged();
+            });
+    searchBox.setOnItemClickListener(
+        (parent, view, position, id) -> focus((String) parent.getItemAtPosition(position)));
+    if (state != null) {
+      zoom.setFullScreen(state.getBoolean("fullscreen"));
+      String draft = state.getString("draft");
+      traces.post(() -> traces.restoreDraft(draft));
+    }
+
     findViewById(R.id.btnSearch).setOnClickListener(v -> searchStreet());
     searchBox.setOnEditorActionListener(
         (v, action, event) -> {
@@ -86,13 +120,15 @@ public class MainActivity extends DataActivity {
     findViewById(R.id.btnExport).setOnClickListener(v -> {});
     findViewById(R.id.btnDeleteTrace).setOnClickListener(v -> deleteSelected());
     findViewById(R.id.btnLexique)
-        .setOnClickListener(v -> startActivity(new Intent(this, LexiqueActivity.class)));
-    findViewById(R.id.btnHistory).setOnClickListener(v -> chooseWeek());
+        .setOnClickListener(
+            v -> afterDraftCheck(() -> startActivity(new Intent(this, LexiqueActivity.class))));
+    findViewById(R.id.btnHistory).setOnClickListener(v -> afterDraftCheck(this::chooseWeek));
     findViewById(R.id.btnSettings)
-        .setOnClickListener(v -> startActivity(new Intent(this, SettingsActivity.class)));
+        .setOnClickListener(
+            v -> afterDraftCheck(() -> startActivity(new Intent(this, SettingsActivity.class))));
     findViewById(R.id.btnToday)
-        .setOnClickListener(v -> startActivity(new Intent(this, TodayActivity.class)));
-    findViewById(R.id.btnMyLocation).setOnClickListener(v -> locate());
+        .setOnClickListener(
+            v -> afterDraftCheck(() -> startActivity(new Intent(this, TodayActivity.class))));
     Button remaining = findViewById(R.id.btnRemaining);
     remaining.setText(remainingOnly ? "Tout afficher" : "À faire");
     remaining.setOnClickListener(
@@ -105,10 +141,10 @@ public class MainActivity extends DataActivity {
     ((TextView) findViewById(R.id.tvLegend))
         .setText(
             HtmlCompat.fromHtml(
-                "<font color='#1565C0'>■ Lun</font> <font color='#2E7D32'>■ Mar</font> <font"
-                    + " color='#EF6C00'>■ Mer</font> <font color='#6A1B9A'>■ Jeu</font> <font"
-                    + " color='#C62828'>■ Ven</font> <font color='#00838F'>■ Sam</font> <font"
-                    + " color='#616161'>■ Dim</font>",
+                "<font color='#60A5FA'>■ Lun</font> <font color='#86EFAC'>■ Mar</font> <font"
+                    + " color='#FDBA74'>■ Mer</font> <font color='#D8B4FE'>■ Jeu</font> <font"
+                    + " color='#FCA5A5'>■ Ven</font> <font color='#67E8F9'>■ Sam</font> <font"
+                    + " color='#CBD5E1'>■ Dim</font>",
                 HtmlCompat.FROM_HTML_MODE_LEGACY));
     loadBoundary(false);
     load(false);
@@ -175,7 +211,9 @@ public class MainActivity extends DataActivity {
     if (points == null || points.size() < 3) return;
     BoundingBox box = bounds(points, 0);
     map.setScrollableAreaLimitDouble(box);
-    map.post(() -> map.zoomToBoundingBox(box, false, 20));
+    if (!fitted && !zoom.hasRestoredCamera())
+      map.post(() -> map.zoomToBoundingBox(box, false, dp(18)));
+    fitted = true;
   }
 
   private BoundingBox bounds(List<GeoPoint> points, double margin) {
@@ -199,6 +237,8 @@ public class MainActivity extends DataActivity {
                 () -> {
                   if (isFinishing() || isDestroyed()) return;
                   streets = result;
+                  searchBox.setAdapter(
+                      new StreetSuggestions(MainActivity.this, StreetResolver.names(streets)));
                   onDataChanged();
                 });
           }
@@ -211,9 +251,11 @@ public class MainActivity extends DataActivity {
 
   @Override
   protected void onDataChanged() {
+    if (exporting) return;
     if (db != null && map != null) {
       render();
       refreshStatus();
+      if (traces != null) traces.refresh();
     }
   }
 
@@ -227,9 +269,7 @@ public class MainActivity extends DataActivity {
             + progress.size()
             + " commencées • "
             + completed
-            + " terminées\n"
-            + StreetResolver.names(streets).size()
-            + " rues • pourcentage = longueur estimée");
+            + " terminées");
   }
 
   private void addLine(List<GeoPoint> points, String name, int color, float width) {
@@ -241,7 +281,7 @@ public class MainActivity extends DataActivity {
     line.getOutlinePaint().setStrokeWidth(width);
     line.setOnClickListener(
         (p, m, e) -> {
-          showStreet(name);
+          selectStreet(name);
           return true;
         });
     lines.add(line);
@@ -257,17 +297,21 @@ public class MainActivity extends DataActivity {
       int current = progress.containsKey(name) ? progress.get(name) : 0;
       if (remainingOnly && current == 100) continue;
       List<List<GeoPoint>> paths = RouteGeometry.ordered(streets, name);
-      for (List<GeoPoint> p : paths) addLine(p, name, Color.argb(90, 60, 60, 60), 3f);
+      if (remainingOnly)
+        for (List<GeoPoint> p : paths) addLine(p, name, Color.argb(90, 60, 60, 60), dp(2));
       int previous = 0;
       for (String[] row : history) {
         if (!name.equals(row[0])) continue;
         int end = Math.min(current, Integer.parseInt(row[4]));
         if (end <= previous) continue;
         for (List<GeoPoint> part : RouteGeometry.slice(paths, previous, end))
-          addLine(part, name, Integer.parseInt(row[2]), 7f);
+          addLine(part, name, Integer.parseInt(row[2]), dp(3));
         previous = end;
       }
     }
+    if (selectedName != null)
+      for (List<GeoPoint> path : RouteGeometry.ordered(streets, selectedName))
+        addLine(path, selectedName, 0xaa0891b2, dp(4));
     map.invalidate();
   }
 
@@ -301,6 +345,7 @@ public class MainActivity extends DataActivity {
                     "manuel",
                     new int[] {25, 50, 75, 100}[which]);
                 onDataChanged();
+                showUndo("Avancement enregistré");
               } catch (Exception e) {
                 toast(e.getMessage());
               }
@@ -338,8 +383,12 @@ public class MainActivity extends DataActivity {
     ((Button) findViewById(R.id.btnRemaining)).setText("À faire");
     render();
     map.zoomToBoundingBox(bounds(points, .0004), true, 60);
-    searchBox.setText(name);
-    showStreet(name);
+    searchBox.setText(name, false);
+    searchBox.dismissDropDown();
+    searchBox.clearFocus();
+    ((InputMethodManager) getSystemService(INPUT_METHOD_SERVICE))
+        .hideSoftInputFromWindow(searchBox.getWindowToken(), 0);
+    selectStreet(name);
   }
 
   private void deleteSelected() {
@@ -366,6 +415,7 @@ public class MainActivity extends DataActivity {
             (d, w) -> {
               db.deleteWeekStreet(name, selectedWeek);
               onDataChanged();
+              showUndo("Marquage effacé");
             })
         .show();
   }
@@ -393,98 +443,6 @@ public class MainActivity extends DataActivity {
             });
   }
 
-  private void locate() {
-    if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-        != PackageManager.PERMISSION_GRANTED) {
-      ActivityCompat.requestPermissions(
-          this,
-          new String[] {
-            Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION
-          },
-          41);
-      return;
-    }
-    LocationManager manager = (LocationManager) getSystemService(LOCATION_SERVICE);
-    try {
-      Location last = manager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
-      if (last != null
-          && System.currentTimeMillis() - last.getTime() < 120000
-          && last.getAccuracy() <= 80) {
-        useLocation(last);
-        return;
-      }
-      stopLocation();
-      String provider =
-          manager.isProviderEnabled(LocationManager.GPS_PROVIDER)
-              ? LocationManager.GPS_PROVIDER
-              : LocationManager.NETWORK_PROVIDER;
-      locationListener =
-          new LocationListener() {
-            public void onLocationChanged(Location value) {
-              stopLocation();
-              useLocation(value);
-            }
-
-            public void onStatusChanged(String p, int s, Bundle b) {}
-
-            public void onProviderEnabled(String p) {}
-
-            public void onProviderDisabled(String p) {}
-          };
-      manager.requestSingleUpdate(provider, locationListener, Looper.getMainLooper());
-      status.setText("Recherche d’une position récente…");
-      handler.postDelayed(
-          () -> {
-            if (locationListener != null) {
-              stopLocation();
-              toast("Position indisponible, recherche la rue par son nom");
-            }
-          },
-          15000);
-    } catch (Exception e) {
-      toast("Position indisponible : " + e.getMessage());
-    }
-  }
-
-  private void useLocation(Location value) {
-    if (!value.hasAccuracy() || value.getAccuracy() > 80) {
-      toast("Position trop imprécise, recherche la rue par son nom");
-      return;
-    }
-    GeoPoint point = new GeoPoint(value.getLatitude(), value.getLongitude());
-    Street nearest = null;
-    double best = 60;
-    for (Street street : streets) {
-      double distance = RouteGeometry.distanceTo(point, street.getPoints());
-      if (distance < best) {
-        best = distance;
-        nearest = street;
-      }
-    }
-    if (nearest == null) {
-      toast("Aucune rue d’Orsay assez proche de cette position");
-      return;
-    }
-    focus(nearest.getName());
-  }
-
-  private void stopLocation() {
-    if (locationListener != null) {
-      try {
-        ((LocationManager) getSystemService(LOCATION_SERVICE)).removeUpdates(locationListener);
-      } catch (Exception ignored) {
-      }
-      locationListener = null;
-    }
-  }
-
-  @Override
-  public void onRequestPermissionsResult(int code, String[] permissions, int[] results) {
-    super.onRequestPermissionsResult(code, permissions, results);
-    if (code == 41 && results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED)
-      locate();
-  }
-
   @Override
   protected void onNewIntent(Intent intent) {
     super.onNewIntent(intent);
@@ -507,7 +465,7 @@ public class MainActivity extends DataActivity {
   @Override
   protected void onPause() {
     UpdateManager.pause(this);
-    stopLocation();
+    if (zoom != null) zoom.stop();
     if (map != null) map.onPause();
     super.onPause();
   }
@@ -522,10 +480,169 @@ public class MainActivity extends DataActivity {
   @Override
   protected void onSaveInstanceState(Bundle out) {
     super.onSaveInstanceState(out);
+    zoom.saveCamera();
+    out.putBoolean("fullscreen", zoom.isFullScreen());
+    out.putString("draft", traces.snapshotDraft());
     out.putBoolean("remaining", remainingOnly);
     out.putBoolean("follow_current_week", followCurrentWeek);
     out.putString("week", selectedWeek);
     out.putString("query", searchBox.getText().toString());
+  }
+
+  public String getDrawingDate() {
+    return followCurrentWeek ? DayColor.today() : selectedWeek;
+  }
+
+  void showOverview() {
+    closeSelection();
+    if (map.hasBoundary()) map.zoomToBoundingBox(bounds(map.boundaryPoints(), 0), false, dp(18));
+  }
+
+  private void options(View anchor) {
+    PopupMenu menu = new PopupMenu(this, anchor);
+    String[] titles = {
+      "Dessiner au doigt",
+      remainingOnly ? "Tout afficher" : "Rues à faire",
+      "Exporter PNG + PDF",
+      "Annuler la dernière modification",
+      "Synchroniser avec ChatGPT",
+      "Actualiser les rues",
+      "Fond de plan"
+    };
+    for (int i = 0; i < titles.length; i++) menu.getMenu().add(0, i, i, titles[i]);
+    menu.setOnMenuItemClickListener(
+        item -> {
+          switch (item.getItemId()) {
+            case 0:
+              closeSelection();
+              traces.startDrawing();
+              break;
+            case 1:
+              findViewById(R.id.btnRemaining).performClick();
+              break;
+            case 2:
+              afterDraftCheck(() -> findViewById(R.id.btnExport).performClick());
+              break;
+            case 3:
+              if (db.getLastTodayStreet() == null) toast("Aucune modification à annuler");
+              else {
+                db.undoLastToday();
+                onDataChanged();
+              }
+              break;
+            case 4:
+              sync();
+              break;
+            case 5:
+              loadBoundary(true);
+              load(true);
+              break;
+            case 6:
+              new AlertDialog.Builder(this)
+                  .setTitle("Fond de plan")
+                  .setSingleChoiceItems(
+                      new String[] {
+                        "Classique · détails nets à fort zoom",
+                        "Détaillé · disponible hors connexion"
+                      },
+                      map.prefersDetailed() ? 1 : 0,
+                      (d, w) -> {
+                        map.setDetailed(w == 1);
+                        d.dismiss();
+                      })
+                  .show();
+              break;
+          }
+          return true;
+        });
+    menu.show();
+  }
+
+  private void selectStreet(String name) {
+    if (traces.isDrawing()) return;
+    selectedName = name;
+    ((TextView) findViewById(R.id.selectedStreet))
+        .setText(name + " · " + db.getWeekProgress(name, selectedWeek) + " %");
+    findViewById(R.id.selectionPanel).setVisibility(View.VISIBLE);
+    render();
+  }
+
+  private void closeSelection() {
+    selectedName = null;
+    findViewById(R.id.selectionPanel).setVisibility(View.GONE);
+    render();
+  }
+
+  private void mapTapped(GeoPoint point) {
+    if (traces.isDrawing()) return;
+    double max =
+        dp(28)
+            * 40075016.69
+            * Math.cos(Math.toRadians(point.getLatitude()))
+            / map.getProjection().getWorldMapSize();
+    String name = null;
+    for (Street s : streets) {
+      double distance = RouteGeometry.distanceTo(point, s.getPoints());
+      if (distance < max) {
+        max = distance;
+        name = s.getName();
+      }
+    }
+    if (name == null) closeSelection();
+    else selectStreet(name);
+  }
+
+  void showUndo(String message) {
+    ((TextView) findViewById(R.id.undoMessage)).setText(message);
+    findViewById(R.id.undoPanel).setVisibility(View.VISIBLE);
+    handler.removeCallbacks(hideUndo);
+    handler.postDelayed(hideUndo, 8000);
+  }
+
+  private void afterDraftCheck(Runnable action) {
+    if (traces.hasDraft())
+      new AlertDialog.Builder(this)
+          .setTitle("Conserver le dessin en cours ?")
+          .setMessage("Valide le dessin pour l’enregistrer avant de quitter ce mode.")
+          .setNegativeButton("Continuer le dessin", null)
+          .setPositiveButton(
+              "Abandonner",
+              (d, w) -> {
+                traces.cancelDraft();
+                action.run();
+              })
+          .show();
+    else {
+      traces.cancelDraft();
+      action.run();
+    }
+  }
+
+  void prepareExport() {
+    exportRemaining = remainingOnly;
+    remainingOnly = false;
+    closeSelection();
+    render();
+    traces.refresh();
+    exporting = true;
+  }
+
+  void finishExport() {
+    exporting = false;
+    remainingOnly = exportRemaining;
+    onDataChanged();
+  }
+
+  @Override
+  public void onBackPressed() {
+    if (traces.isDrawing()) afterDraftCheck(() -> {});
+    else if (selectedName != null) closeSelection();
+    else if (zoom.isFullScreen()) zoom.setFullScreen(false);
+    else super.onBackPressed();
+  }
+
+  private int dp(float n) {
+    return Math.round(n * getResources().getDisplayMetrics().density);
   }
 
   private void toast(String text) {

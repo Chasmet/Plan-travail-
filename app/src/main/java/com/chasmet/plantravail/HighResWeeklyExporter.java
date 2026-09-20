@@ -20,9 +20,9 @@ import org.osmdroid.views.overlay.Polyline;
 /**
  * Export hebdomadaire.
  *
- * La page 1 reprend volontairement le rendu cartographique historique :
- * fond OpenStreetMap réel, découpe exacte d'Orsay et tracés visibles sur la carte.
- * Les pages suivantes conservent le détail de semaine et le lexique de la version actuelle.
+ * <p>La page 1 reprend volontairement le rendu cartographique historique : fond OpenStreetMap réel,
+ * découpe exacte d'Orsay et tracés visibles sur la carte. Les pages suivantes conservent le détail
+ * de semaine et le lexique de la version actuelle.
  */
 public final class HighResWeeklyExporter {
   public interface Callback {
@@ -41,6 +41,10 @@ public final class HighResWeeklyExporter {
   private static final AtomicBoolean BUSY = new AtomicBoolean();
 
   private HighResWeeklyExporter() {}
+
+  static boolean isBusy() {
+    return BUSY.get();
+  }
 
   public static void export(Activity activity, OrsayMapView map, Callback callback) {
     if (!BUSY.compareAndSet(false, true)) {
@@ -123,6 +127,7 @@ public final class HighResWeeklyExporter {
     double oldZoom = map.getZoomLevelDouble();
     GeoPoint oldCenter = (GeoPoint) map.getMapCenter();
     List<OverlayStyle> overlayStyles = prepareReadableRoutes(map);
+    map.setHistoricalExport(true);
     map.setScrollableAreaLimitDouble(new BoundingBox(85.0, 179.0, -85.0, -179.0));
 
     Bitmap result;
@@ -131,6 +136,7 @@ public final class HighResWeeklyExporter {
           Bitmap.createBitmap(
               grid.outputWidth, grid.outputHeight + HEADER, Bitmap.Config.ARGB_8888);
     } catch (OutOfMemoryError e) {
+      map.setHistoricalExport(false);
       restoreOverlayStyles(overlayStyles);
       map.setScrollableAreaLimitDouble(originalBounds);
       BUSY.set(false);
@@ -172,11 +178,8 @@ public final class HighResWeeklyExporter {
       float width = line.getOutlinePaint().getStrokeWidth();
       saved.add(new OverlayStyle(line, color, width));
       if (Color.alpha(color) >= 180 || width >= 8f) {
-        line
-            .getOutlinePaint()
-            .setColor(
-                Color.argb(
-                    118, Color.red(color), Color.green(color), Color.blue(color)));
+        line.getOutlinePaint()
+            .setColor(Color.argb(118, Color.red(color), Color.green(color), Color.blue(color)));
         line.getOutlinePaint().setStrokeWidth(Math.min(width, 6f));
       }
     }
@@ -209,8 +212,7 @@ public final class HighResWeeklyExporter {
             if (s.activity.isFinishing() || s.activity.isDestroyed())
               throw new IllegalStateException("L'application a été fermée pendant l'export");
             Bitmap shot =
-                Bitmap.createBitmap(
-                    s.map.getWidth(), s.map.getHeight(), Bitmap.Config.ARGB_8888);
+                Bitmap.createBitmap(s.map.getWidth(), s.map.getHeight(), Bitmap.Config.ARGB_8888);
             try {
               Canvas c = new Canvas(shot);
               s.map.draw(c);
@@ -239,14 +241,9 @@ public final class HighResWeeklyExporter {
             try {
               Context context = s.activity.getApplicationContext();
               File dir = new File(context.getFilesDir(), "exports");
-              if (!dir.exists() && !dir.mkdirs())
-                throw new IOException("Stockage inaccessible");
+              if (!dir.exists() && !dir.mkdirs()) throw new IOException("Stockage inaccessible");
 
-              String name =
-                  "Plan_Travail_Orsay_"
-                      + s.week
-                      + "_"
-                      + System.currentTimeMillis();
+              String name = "Plan_Travail_Orsay_" + s.week + "_" + System.currentTimeMillis();
               png = new File(dir, name + ".png");
               pdf = new File(dir, name + ".pdf");
 
@@ -258,11 +255,9 @@ public final class HighResWeeklyExporter {
               writePdfWithHistoricalMap(pdf, s.result, s.week, s.work, s.lexicon);
 
               Uri pngUri =
-                  FileProvider.getUriForFile(
-                      context, context.getPackageName() + ".files", png);
+                  FileProvider.getUriForFile(context, context.getPackageName() + ".files", png);
               Uri pdfUri =
-                  FileProvider.getUriForFile(
-                      context, context.getPackageName() + ".files", pdf);
+                  FileProvider.getUriForFile(context, context.getPackageName() + ".files", pdf);
 
               if (Build.VERSION.SDK_INT >= 29) {
                 pngUri = publish(context, png, "image/png", true);
@@ -284,8 +279,7 @@ public final class HighResWeeklyExporter {
             } catch (Exception | OutOfMemoryError e) {
               if (png != null) png.delete();
               if (pdf != null) pdf.delete();
-              String message =
-                  e.getMessage() == null ? "Mémoire insuffisante" : e.getMessage();
+              String message = e.getMessage() == null ? "Mémoire insuffisante" : e.getMessage();
               s.activity.runOnUiThread(() -> s.callback.onError(message));
             } finally {
               s.result.recycle();
@@ -304,12 +298,12 @@ public final class HighResWeeklyExporter {
     }
     if (!s.result.isRecycled()) s.result.recycle();
     BUSY.set(false);
-    String message =
-        t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
+    String message = t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
     s.callback.onError(message);
   }
 
   private static void restore(ExportState s) {
+    s.map.setHistoricalExport(false);
     restoreOverlayStyles(s.overlayStyles);
     s.map.setScrollableAreaLimitDouble(s.originalBounds);
     s.map.getController().setZoom(s.oldZoom);
@@ -317,8 +311,7 @@ public final class HighResWeeklyExporter {
     s.map.invalidate();
   }
 
-  private static void drawBoundary(
-      Canvas canvas, List<GeoPoint> boundary, Grid grid, int zoom) {
+  private static void drawBoundary(Canvas canvas, List<GeoPoint> boundary, Grid grid, int zoom) {
     Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
     border.setColor(Color.rgb(20, 110, 230));
     border.setStyle(Paint.Style.STROKE);
@@ -340,11 +333,7 @@ public final class HighResWeeklyExporter {
   }
 
   private static void drawHeader(
-      Canvas canvas,
-      String week,
-      List<String[]> work,
-      int manualCount,
-      int width) {
+      Canvas canvas, String week, List<String[]> work, int manualCount, int width) {
     Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
     p.setColor(Color.BLACK);
     p.setTextSize(Math.max(30f, width / 90f));
@@ -376,8 +365,7 @@ public final class HighResWeeklyExporter {
     drawLegend(canvas, week, 28, 142, Math.max(20f, width / 135f));
   }
 
-  private static void drawLegend(
-      Canvas canvas, String week, float x, float y, float textSize) {
+  private static void drawLegend(Canvas canvas, String week, float x, float y, float textSize) {
     String[] days = {"Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"};
     Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
     p.setTextSize(textSize);
@@ -393,13 +381,7 @@ public final class HighResWeeklyExporter {
   }
 
   private static Grid makeGrid(
-      double north,
-      double east,
-      double south,
-      double west,
-      int viewW,
-      int viewH,
-      int zoom) {
+      double north, double east, double south, double west, int viewW, int viewH, int zoom) {
     double left = worldX(west, zoom);
     double right = worldX(east, zoom);
     double top = worldY(north, zoom);
@@ -415,12 +397,7 @@ public final class HighResWeeklyExporter {
       for (int col = 0; col < cols; col++) {
         double cx = leftWorld + col * viewW + viewW / 2.0;
         double cy = topWorld + row * viewH + viewH / 2.0;
-        centers.add(
-            new Cell(
-                worldToLat(cy, zoom),
-                worldToLon(cx, zoom),
-                col * viewW,
-                row * viewH));
+        centers.add(new Cell(worldToLat(cy, zoom), worldToLon(cx, zoom), col * viewW, row * viewH));
       }
     }
     return new Grid(outW, outH, leftWorld, topWorld, centers);
@@ -433,12 +410,8 @@ public final class HighResWeeklyExporter {
 
   private static double worldY(double lat, int zoom) {
     double world = 256.0 * (1 << zoom);
-    double r =
-        Math.toRadians(
-            Math.max(-85.05112878, Math.min(85.05112878, lat)));
-    return (1.0 - Math.log(Math.tan(r) + 1.0 / Math.cos(r)) / Math.PI)
-        / 2.0
-        * world;
+    double r = Math.toRadians(Math.max(-85.05112878, Math.min(85.05112878, lat)));
+    return (1.0 - Math.log(Math.tan(r) + 1.0 / Math.cos(r)) / Math.PI) / 2.0 * world;
   }
 
   private static double worldToLon(double x, int zoom) {
@@ -452,12 +425,14 @@ public final class HighResWeeklyExporter {
     return Math.toDegrees(Math.atan(Math.sinh(n)));
   }
 
+  static RectF fitMapPage(int iw, int ih, int pw, int ph) {
+    float scale = Math.min((float) pw / iw, (float) ph / ih);
+    float w = iw * scale, h = ih * scale;
+    return new RectF((pw - w) / 2, (ph - h) / 2, (pw + w) / 2, (ph + h) / 2);
+  }
+
   private static void writePdfWithHistoricalMap(
-      File target,
-      Bitmap mapImage,
-      String week,
-      List<String[]> work,
-      List<String[]> lexicon)
+      File target, Bitmap mapImage, String week, List<String[]> work, List<String[]> lexicon)
       throws Exception {
     PdfDocument document = new PdfDocument();
     try {
@@ -465,16 +440,17 @@ public final class HighResWeeklyExporter {
       int pageH =
           Math.max(
               3508,
-              (int)
-                  Math.round(
-                      pageW * (mapImage.getHeight() / (double) mapImage.getWidth())));
+              (int) Math.round(pageW * (mapImage.getHeight() / (double) mapImage.getWidth())));
       PdfDocument.Page page =
           document.startPage(new PdfDocument.PageInfo.Builder(pageW, pageH, 1).create());
       try {
         Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-        page
-            .getCanvas()
-            .drawBitmap(mapImage, null, new Rect(0, 0, pageW, pageH), paint);
+        page.getCanvas()
+            .drawBitmap(
+                mapImage,
+                null,
+                fitMapPage(mapImage.getWidth(), mapImage.getHeight(), pageW, pageH),
+                paint);
       } finally {
         document.finishPage(page);
       }
@@ -502,15 +478,11 @@ public final class HighResWeeklyExporter {
   }
 
   /**
-   * Conservé pour les tests et pour un éventuel export vectoriel interne.
-   * L'export utilisateur emploie writePdfWithHistoricalMap afin de garder le plan historique.
+   * Conservé pour les tests et pour un éventuel export vectoriel interne. L'export utilisateur
+   * emploie writePdfWithHistoricalMap afin de garder le plan historique.
    */
   static void writePdf(
-      File target,
-      PlanDrawing drawing,
-      String week,
-      List<String[]> work,
-      List<String[]> lexicon)
+      File target, PlanDrawing drawing, String week, List<String[]> work, List<String[]> lexicon)
       throws Exception {
     PdfDocument document = new PdfDocument();
     try {
@@ -542,30 +514,18 @@ public final class HighResWeeklyExporter {
     }
   }
 
-  static PdfTextLayout textLayout(
-      String week, List<String[]> work, List<String[]> lexicon) {
-    PdfTextLayout text =
-        new PdfTextLayout(2, "Détail de la semaine du " + week);
-    if (work.isEmpty())
-      text.paragraph(
-          "Aucune rue enregistrée cette semaine.", false, Color.BLACK);
+  static PdfTextLayout textLayout(String week, List<String[]> work, List<String[]> lexicon) {
+    PdfTextLayout text = new PdfTextLayout(2, "Détail de la semaine du " + week);
+    if (work.isEmpty()) text.paragraph("Aucune rue enregistrée cette semaine.", false, Color.BLACK);
 
     for (String[] row : work)
       text.paragraph(
-          DayColor.dayName(row[1])
-              + " "
-              + row[1]
-              + " • "
-              + row[0]
-              + " • "
-              + row[4]
-              + " %",
+          DayColor.dayName(row[1]) + " " + row[1] + " • " + row[0] + " • " + row[4] + " %",
           false,
           DayColor.forDate(row[1]));
 
     text.section("Lexique / spécificités");
-    if (lexicon.isEmpty())
-      text.paragraph("Aucune note enregistrée.", false, Color.BLACK);
+    if (lexicon.isEmpty()) text.paragraph("Aucune note enregistrée.", false, Color.BLACK);
 
     for (String[] row : lexicon) {
       text.paragraph(row[1], true, Color.BLACK);
@@ -576,16 +536,14 @@ public final class HighResWeeklyExporter {
   }
 
   @android.annotation.TargetApi(29)
-  private static Uri publish(
-      Context context, File file, String mime, boolean image) throws Exception {
+  private static Uri publish(Context context, File file, String mime, boolean image)
+      throws Exception {
     ContentValues values = new ContentValues();
     values.put(MediaStore.MediaColumns.DISPLAY_NAME, file.getName());
     values.put(MediaStore.MediaColumns.MIME_TYPE, mime);
     values.put(
         MediaStore.MediaColumns.RELATIVE_PATH,
-        (image
-                ? Environment.DIRECTORY_PICTURES
-                : Environment.DIRECTORY_DOWNLOADS)
+        (image ? Environment.DIRECTORY_PICTURES : Environment.DIRECTORY_DOWNLOADS)
             + "/Plan Travail Orsay");
     values.put(MediaStore.MediaColumns.IS_PENDING, 1);
 
@@ -622,12 +580,7 @@ public final class HighResWeeklyExporter {
     final double leftWorld, topWorld;
     final List<Cell> centers;
 
-    Grid(
-        int outputWidth,
-        int outputHeight,
-        double leftWorld,
-        double topWorld,
-        List<Cell> centers) {
+    Grid(int outputWidth, int outputHeight, double leftWorld, double topWorld, List<Cell> centers) {
       this.outputWidth = outputWidth;
       this.outputHeight = outputHeight;
       this.leftWorld = leftWorld;

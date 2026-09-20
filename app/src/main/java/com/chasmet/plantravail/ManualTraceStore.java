@@ -1,111 +1,129 @@
 package com.chasmet.plantravail;
 
 import android.content.Context;
-import android.content.SharedPreferences;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.UUID;
-import org.json.JSONArray;
-import org.json.JSONObject;
+import java.util.*;
+import org.json.*;
 import org.osmdroid.util.GeoPoint;
 
 final class ManualTraceStore {
   static final class Trace {
-    final String id;
-    final String date;
+    final String id, date;
     final int color;
     final List<GeoPoint> points;
+    final List<List<GeoPoint>> parts;
 
-    Trace(String id, String date, int color, List<GeoPoint> points) {
-      this.id = id;
-      this.date = date;
-      this.color = color;
-      this.points = points;
+    Trace(JSONObject o) throws Exception {
+      id = o.getString("id");
+      date = o.getString("date");
+      color = DayColor.forDate(date);
+      JSONArray paths = o.optJSONArray("parts");
+      if (paths == null) paths = new JSONArray().put(o.getJSONArray("points"));
+      parts = new ArrayList<>();
+      for (int i = 0; i < paths.length(); i++) {
+        JSONArray p = paths.getJSONArray(i);
+        List<GeoPoint> line = new ArrayList<>();
+        for (int j = 0; j < p.length(); j++) {
+          JSONArray xy = p.getJSONArray(j);
+          line.add(new GeoPoint(xy.getDouble(0), xy.getDouble(1)));
+        }
+        parts.add(line);
+      }
+      points = parts.get(0);
     }
   }
 
-  private static final String PREFS = "manual_traces";
-  private static final String KEY = "items";
-  private final SharedPreferences prefs;
+  private final WorkDatabase db;
 
   ManualTraceStore(Context context) {
-    prefs = context.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    db = WorkDatabase.getInstance(context);
   }
 
-  synchronized List<Trace> all() {
-    List<Trace> out = new ArrayList<>();
+  List<Trace> all() {
+    return read(null);
+  }
+
+  List<Trace> forWeek(String date) {
+    return read(date);
+  }
+
+  private List<Trace> read(String date) {
     try {
-      JSONArray a = new JSONArray(prefs.getString(KEY, "[]"));
-      for (int i = 0; i < a.length(); i++) {
-        JSONObject o = a.getJSONObject(i);
-        JSONArray pts = o.getJSONArray("points");
-        List<GeoPoint> points = new ArrayList<>();
-        for (int j = 0; j < pts.length(); j++) {
-          JSONArray p = pts.getJSONArray(j);
-          points.add(new GeoPoint(p.getDouble(0), p.getDouble(1)));
-        }
-        if (points.size() >= 2)
-          out.add(new Trace(o.getString("id"), o.getString("date"), o.getInt("color"), points));
-      }
-    } catch (Exception ignored) {
-    }
-    return out;
-  }
-
-  synchronized List<Trace> forWeek(String anyDateInWeek) {
-    String[] range = DayColor.weekRange(anyDateInWeek);
-    List<Trace> out = new ArrayList<>();
-    for (Trace t : all()) if (t.date.compareTo(range[0]) >= 0 && t.date.compareTo(range[1]) <= 0) out.add(t);
-    return out;
-  }
-
-  synchronized Trace save(String editingId, String date, List<GeoPoint> input) {
-    if (input == null || input.size() < 2) throw new IllegalArgumentException("Place au moins 2 points");
-    DayColor.requireDate(date);
-    String id = editingId == null ? UUID.randomUUID().toString() : editingId;
-    Trace trace = new Trace(id, date, DayColor.forDate(date), copy(input));
-    List<Trace> items = all();
-    boolean replaced = false;
-    for (int i = 0; i < items.size(); i++) {
-      if (items.get(i).id.equals(id)) {
-        items.set(i, trace);
-        replaced = true;
-        break;
-      }
-    }
-    if (!replaced) items.add(trace);
-    write(items);
-    return trace;
-  }
-
-  synchronized void delete(String id) {
-    List<Trace> items = all();
-    for (int i = items.size() - 1; i >= 0; i--) if (items.get(i).id.equals(id)) items.remove(i);
-    write(items);
-  }
-
-  private void write(List<Trace> items) {
-    JSONArray a = new JSONArray();
-    try {
-      for (Trace t : items) {
-        JSONObject o = new JSONObject();
-        o.put("id", t.id);
-        o.put("date", t.date);
-        o.put("color", t.color);
-        JSONArray pts = new JSONArray();
-        for (GeoPoint p : t.points) pts.put(new JSONArray().put(p.getLatitude()).put(p.getLongitude()));
-        o.put("points", pts);
-        a.put(o);
-      }
-      prefs.edit().putString(KEY, a.toString()).apply();
+      JSONArray data = db.traceRows(date);
+      List<Trace> out = new ArrayList<>();
+      for (int i = 0; i < data.length(); i++) out.add(new Trace(data.getJSONObject(i)));
+      return out;
     } catch (Exception e) {
-      throw new IllegalStateException("Impossible d’enregistrer le tracé manuel", e);
+      throw new IllegalStateException("Impossible de lire les dessins", e);
     }
   }
 
-  private static List<GeoPoint> copy(List<GeoPoint> src) {
-    List<GeoPoint> out = new ArrayList<>();
-    for (GeoPoint p : src) out.add(new GeoPoint(p.getLatitude(), p.getLongitude()));
+  Trace save(String id, String date, List<GeoPoint> points) {
+    return saveParts(id, date, Collections.singletonList(points));
+  }
+
+  Trace saveParts(String id, String date, List<List<GeoPoint>> paths) {
+    try {
+      JSONObject value = json(id, date, paths);
+      db.writeTrace(value, null);
+      return new Trace(value);
+    } catch (Exception e) {
+      throw new IllegalArgumentException(e.getMessage(), e);
+    }
+  }
+
+  static JSONObject json(String id, String date, List<List<GeoPoint>> paths) throws Exception {
+    JSONArray parts = new JSONArray();
+    for (List<GeoPoint> path : paths) {
+      JSONArray p = new JSONArray();
+      for (GeoPoint point : path)
+        p.put(new JSONArray().put(point.getLatitude()).put(point.getLongitude()));
+      parts.put(p);
+    }
+    JSONObject out =
+        new JSONObject()
+            .put("id", id == null ? UUID.randomUUID().toString() : id)
+            .put("date", date)
+            .put("color", DayColor.forDate(date))
+            .put("parts", parts);
+    validate(out);
     return out;
+  }
+
+  void delete(String id) {
+    try {
+      db.writeTrace(null, id);
+    } catch (Exception e) {
+      throw new IllegalArgumentException(e.getMessage(), e);
+    }
+  }
+
+  static void validate(JSONObject value) throws Exception {
+    if (!value.getString("id").matches("[A-Za-z0-9_.:-]{1,128}"))
+      throw new IllegalArgumentException("Identifiant du dessin invalide");
+    DayColor.requireDate(value.getString("date"));
+    JSONArray parts = value.optJSONArray("parts");
+    if (parts == null) parts = new JSONArray().put(value.getJSONArray("points"));
+    if (parts.length() < 1 || parts.length() > 200)
+      throw new IllegalArgumentException("Dessin vide ou trop long");
+    int total = 0;
+    for (int i = 0; i < parts.length(); i++) {
+      JSONArray points = parts.getJSONArray(i);
+      if (points.length() < 2)
+        throw new IllegalArgumentException("Chaque trait nécessite deux points");
+      total += points.length();
+      if (total > 20000) throw new IllegalArgumentException("Dessin trop détaillé");
+      for (int j = 0; j < points.length(); j++) {
+        JSONArray p = points.getJSONArray(j);
+        double lat = p.getDouble(0), lon = p.getDouble(1);
+        if (Double.isNaN(lat)
+            || Double.isInfinite(lat)
+            || Double.isNaN(lon)
+            || Double.isInfinite(lon)
+            || lat < -90
+            || lat > 90
+            || lon < -180
+            || lon > 180) throw new IllegalArgumentException("Coordonnées invalides");
+      }
+    }
   }
 }

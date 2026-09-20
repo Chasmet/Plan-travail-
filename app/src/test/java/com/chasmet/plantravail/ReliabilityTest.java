@@ -72,7 +72,7 @@ public class ReliabilityTest {
     old.close();
     assertEquals(50, db.getWeekProgress("Rue de Paris", "2026-09-07"));
     assertEquals("À conserver", db.getLexicon().get(0)[2]);
-    assertEquals(4, db.getReadableDatabase().getVersion());
+    assertEquals(5, db.getReadableDatabase().getVersion());
     assertEquals(0, db.pendingCount());
   }
 
