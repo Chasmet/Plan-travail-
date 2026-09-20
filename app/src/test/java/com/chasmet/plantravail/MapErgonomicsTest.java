@@ -141,7 +141,7 @@ public class MapErgonomicsTest {
         "Les données détaillées doivent être accessibles depuis les assets de l’APK",
         ReflectionHelpers.getField(map, "vectorData"));
     map.getController().setZoom(18d);
-    map.getController().setCenter(new GeoPoint(48.6972, 2.1881));
+    map.getController().setCenter(new GeoPoint(48.69685225, 2.18722025));
     return activity;
   }
 
@@ -157,6 +157,10 @@ public class MapErgonomicsTest {
     saveScreen(activity, "plan-zoom-21.png");
     map.getController().setZoom(24d);
     saveScreen(activity, "plan-zoom-24.png");
+    assertEquals(
+        "24,0",
+        ((android.widget.TextView) activity.findViewById(R.id.btnZoomLevel)).getText().toString());
+    assertTrue("La rue visible doit rester dessinée au zoom maximal", colors(map) > 12);
     assertTrue(map.isDetailed());
     map.setHistoricalExport(true);
     assertFalse(map.isDetailed());
@@ -292,6 +296,7 @@ public class MapErgonomicsTest {
   }
 
   private void saveScreen(MainActivity activity, String name) throws Exception {
+    Shadows.shadowOf(Looper.getMainLooper()).idle();
     View decor = activity.getWindow().getDecorView();
     Bitmap image = Bitmap.createBitmap(360, 800, Bitmap.Config.ARGB_8888);
     decor.draw(new Canvas(image));

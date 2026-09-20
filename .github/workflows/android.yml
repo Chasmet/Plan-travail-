@@ -90,12 +90,13 @@ jobs:
           tag_name: v1.0.${{ github.run_number }}
           name: Plan Travail Orsay v1.0.${{ github.run_number }}
           body: |
-            Corrections issues de l’audit de Plan Travail Orsay.
-            Clé et certificat de signature identiques aux versions précédentes : installer par-dessus pour conserver vos données.
-            Marquage corrigé, recherche précise, annulation réelle et consultation des semaines passées.
-            Commandes reçues conservées sur le téléphone, contrôlées après écriture et confirmations réessayées sans doublons.
-            Sauvegarde complète et restauration, lexique modifiable, catalogue hors ligne et exports PNG/PDF A4 complets.
-            Mise à jour reprenable avec contrôle de la version et de la signature de l’APK.
-            Service Render existant conservé. Tests automatisés Android et signature vérifiés avant publication.
+            Zoom approfondi jusqu’à 24, fond vectoriel net et détails hors ligne.
+            Appui prolongé sur +/−, curseur de zoom précis, échelle en mètres et cadrage mémorisé.
+            Interface compacte, plein écran, recherche avec suggestions et fiche de rue.
+            Dessins en plusieurs traits avec zoom à deux doigts et brouillon conservé à la rotation.
+            Dessins inclus dans les sauvegardes, migration des anciens tracés et annulation.
+            PDF au fond historique conservé, sans déformation du plan.
+            Même certificat : installer par-dessus la version actuelle pour conserver les données.
+            Tests Android, Lint et contrôle de signature exécutés avant publication.
           files: PlanTravail-Orsay-v1.0.${{ github.run_number }}.apk
           make_latest: true
